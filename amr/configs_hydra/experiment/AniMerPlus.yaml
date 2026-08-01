@@ -35,6 +35,9 @@ LOSS_WEIGHTS:
     BETAS: 0.0005
     ADVERSARIAL: 0
     MASK: 0.0
+  VAREN:
+    KEYPOINTS_3D: 0.05
+    KEYPOINTS_2D: 0.01
   SUPCON: 0.0005
 
 TRAIN:
@@ -81,6 +84,21 @@ MODEL:
       emb_dropout: 0.0
       norm: layer
       context_dim: 1280
+  VAREN_HEAD:
+    TYPE: transformer_decoder
+    IN_CHANNELS: 2048
+    IEF_ITERS: 1
+    TRANSFORMER_INPUT: zero
+    JOINT_REP: aa
+    TRANSFORMER_DECODER:
+      depth: 6
+      heads: 8
+      mlp_dim: 1024
+      dim_head: 64
+      dropout: 0.0
+      emb_dropout: 0.0
+      norm: layer
+      context_dim: 1280
   CLASS_TOKEN_HEAD:
     embed_dim: 1280
     hidden_dim: 4096 
@@ -109,6 +127,12 @@ DATASETS:
       TRAIN: path/to/train.json
       TEST: path/to/test.json
     WEIGHT: 1
+  HORSE:
+    ROOT_IMAGE: path/to/horse
+    JSON_FILE:
+      TRAIN: path/to/horse/train.json
+      TEST: path/to/horse/test.json
+    WEIGHT: 0
 
 AVES:
   FOCAL_LENGTH: 2167
@@ -122,6 +146,14 @@ SMAL:
   SHAPE_PRIOR_PATH: data/smal/my_smpl_data_00781_4_all.pkl
   POSE_PRIOR_PATH: data/smal/walking_toy_symmetric_pose_prior_with_cov_35parts.pkl
   NUM_JOINTS: 34
+
+VAREN:
+  FOCAL_LENGTH: 1000
+  MODEL_PATH: /home/om/mpi/VAREN/models
+  NUM_JOINTS: 37
+  NUM_BETAS: 39
+  USE_MUSCLE_DEFORMATIONS: false
+  EXT: pkl
 
 EXTRA:
   NUM_LOG_IMAGES: 4

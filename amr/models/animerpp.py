@@ -1,21 +1,16 @@
 import torch
-import pickle
 import pytorch_lightning as pl
 from torchvision.utils import make_grid
 from typing import Dict
-from pytorch3d.transforms import matrix_to_axis_angle
 from yacs.config import CfgNode
 from ..utils import MeshRenderer
-from ..utils.geometry import aa_to_rotmat, perspective_projection
+from ..utils.geometry import perspective_projection
 from ..utils.pylogger import get_pylogger
-from ..utils.mesh_renderer import SilhouetteRenderer
 from .backbones import create_backbone
 from .heads.classifier_head import ClassTokenHead
-from .heads import build_aves_head, build_smal_head
-from .losses import (Keypoint3DLoss, Keypoint2DLoss, ParameterLoss, SupConLoss,
-                    PoseBonePriorLoss, SilhouetteLoss, ShapePriorLoss, PosePriorLoss)
-from .aves_warapper import AVES
-from .smal_warapper import SMAL
+from .heads import build_varen_head
+from .losses import (Keypoint3DLoss, Keypoint2DLoss, ParameterLoss, SupConLoss)
+from .varen_warapper import VAREN
 
 
 log = get_pylogger(__name__)
@@ -24,7 +19,7 @@ log = get_pylogger(__name__)
 class AniMerPlusPlus(pl.LightningModule):
     def __init__(self, cfg: CfgNode, init_renderer: bool = True):
         """
-        Setup AVES-HMR model
+        Setup VAREN horse model
         Args:
             cfg (CfgNode): Config file as a yacs CfgNode
         """
@@ -42,58 +37,43 @@ class AniMerPlusPlus(pl.LightningModule):
             state_dict = {k.replace('backbone.', ''): v for k, v in state_dict.items()}
             missing_keys, unexpected_keys = self.backbone.load_state_dict(state_dict, strict=False)
     
-        # Create AVES head
-        self.aves_head = build_aves_head(cfg)
-
-        # Create SMAL head
-        self.smal_head = build_smal_head(cfg)
+        # Create VAREN head
+        self.varen_head = build_varen_head(cfg)
 
         self.class_token_head = ClassTokenHead(**cfg.MODEL.get("CLASS_TOKEN_HEAD", dict()))
 
         # Define loss functions
-        # common loss
         self.keypoint_3d_loss = Keypoint3DLoss(loss_type='l1')
         self.keypoint_2d_loss = Keypoint2DLoss(loss_type='l1')
         self.supcon_loss = SupConLoss()
         self.parameter_loss = ParameterLoss()
-        # aves loss
-        self.posebone_prior_loss = PoseBonePriorLoss(path_prior=cfg.AVES.POSE_PRIOR_PATH)
-        self.mask_loss = SilhouetteLoss()
-        # smal loss
-        self.shape_prior_loss = ShapePriorLoss(path_prior=cfg.SMAL.SHAPE_PRIOR_PATH)
-        self.pose_prior_loss = PosePriorLoss(path_prior=cfg.SMAL.POSE_PRIOR_PATH)
-        # Instantiate AVES model
-        aves_model_path = cfg.AVES.MODEL_PATH
-        aves_cfg = torch.load(aves_model_path, weights_only=True)
-        self.aves = AVES(**aves_cfg)
 
-        # Instantiate SMAL model
-        smal_model_path = cfg.SMAL.MODEL_PATH
-        with open(smal_model_path, 'rb') as f:
-            smal_cfg = pickle.load(f, encoding="latin1")
-        self.smal = SMAL(**smal_cfg)
+        # Instantiate VAREN model
+        varen_model_path = cfg.VAREN.MODEL_PATH
+        self.varen = VAREN(model_path=varen_model_path,
+                           num_betas=cfg.VAREN.get('NUM_BETAS', 39),
+                           use_muscle_deformations=cfg.VAREN.get('USE_MUSCLE_DEFORMATIONS', False),
+                           ext=cfg.VAREN.get('EXT', 'pkl'))
 
-        # Buffer that shows whetheer we need to initialize ActNorm layers
+        # Buffer that shows whether we need to initialize ActNorm layers
         self.register_buffer('initialized', torch.tensor(False))
         # Setup renderer for visualization
         if init_renderer:
-            self.aves_mesh_renderer = MeshRenderer(self.cfg, faces=aves_cfg['F'].numpy())
-            self.smal_mesh_renderer = MeshRenderer(self.cfg, faces=self.smal.faces.numpy())
+            # self.varen.faces (amr/models/varen_warapper.py) is already a plain
+            # numpy array (VAREN.faces = data_struct.f, loaded straight from the
+            # pickled model file), not a torch.Tensor -- .numpy() would raise
+            # AttributeError.
+            import numpy as np
+            self.varen_mesh_renderer = MeshRenderer(self.cfg, faces=np.asarray(self.varen.faces))
         else:
             self.renderer = None
             self.mesh_renderer = None
 
-        # Only appling for AVES training
-        self.aves_silouette_render = SilhouetteRenderer(size=self.cfg.MODEL.IMAGE_SIZE,
-                                                        focal=self.cfg.AVES.get("FOCAL_LENGTH", 2167),
-                                                        device='cuda')
-
         self.automatic_optimization = False
 
     def get_parameters(self):
-        all_params = list(self.aves_head.parameters())
+        all_params = list(self.varen_head.parameters())
         all_params += list(self.backbone.parameters())
-        all_params += list(self.smal_head.parameters())
         all_params += list(self.class_token_head.parameters())
         return all_params
 
@@ -115,7 +95,7 @@ class AniMerPlusPlus(pl.LightningModule):
     
     def forward_backbone(self, batch: Dict):
         x = batch['img']
-        dataset_source = batch["supercategory"] < 5  # bird for index 0
+        dataset_source = (batch.get("supercategory", None) < 5) if batch.get("supercategory", None) is not None else None
         # Compute conditioning features using the backbone
         if self.cfg.MODEL.BACKBONE.TYPE in ["vith"]:
             conditioning_feats, cls = self.backbone(x[:, :, :, 32:-32])  # [256, 192]
@@ -152,14 +132,38 @@ class AniMerPlusPlus(pl.LightningModule):
         output['pred_cam_t'] = pred_cam_t
         output['focal_length'] = focal_length
 
-        # Compute model vertices, joints and the projected joints
-        pred_params['global_orient'] = pred_params['global_orient'].reshape(batch_size, -1, 3, 3)
-        pred_params['pose'] = pred_params['pose'].reshape(batch_size, -1, 3, 3)
+        # Compute model vertices, joints and the projected joints.
         pred_params['betas'] = pred_params['betas'].reshape(batch_size, -1)
-        pred_params['bone'] = pred_params['bone'].reshape(batch_size, -1) if 'bone' in pred_params else None
-        parametric_model_output = parametric_model(**pred_params, pose2rot=False)
+        if 'body_pose' in pred_params:
+            pred_params['body_pose'] = pred_params['body_pose'].reshape(batch_size, -1)
+            global_orient = pred_params['global_orient'].reshape(batch_size, 3)
+            body_pose = pred_params['body_pose']
+            betas = pred_params['betas']
+            # NOTE: the VAREN head (joint_rep_type == 'aa') predicts raw axis-angle
+            # values (3 numbers per joint), not rotation matrices, so pose2rot must
+            # be True here. With pose2rot=False, VAREN.lbs() tries to view the
+            # concatenated [global_orient, body_pose] tensor as (B, -1, 3, 3) which
+            # is not divisible by 9 for VAREN's 38-joint layout and raises a shape
+            # error -- this was a bug in the original VAREN wiring.
+            parametric_model_output = parametric_model(global_orient=global_orient,
+                                                      body_pose=body_pose,
+                                                      betas=betas,
+                                                      transl=None,
+                                                      pose2rot=True)
+        else:
+            pred_params['global_orient'] = pred_params['global_orient'].reshape(batch_size, -1, 3, 3)
+            pred_params['pose'] = pred_params['pose'].reshape(batch_size, -1, 3, 3)
+            pred_params['bone'] = pred_params['bone'].reshape(batch_size, -1) if 'bone' in pred_params else None
+            parametric_model_output = parametric_model(**pred_params, pose2rot=False)
 
-        pred_keypoints_3d = parametric_model_output.joints
+        # VAREN's forward() returns `.joints` truncated to the NUM_JOINTS+1 skeletal
+        # joints, and `.surface_keypoints` for the extra named anatomical vertices
+        # (varen.vertex_ids.vertex_ids["varen"], 43 points, in dict-iteration order).
+        # The genzoo export schema's keypoint_2d/keypoint_3d ground truth is defined
+        # over those 43 named vertices, so prediction must use surface_keypoints to
+        # stay index-aligned with the ground truth used in compute_varen_loss.
+        surface_keypoints = getattr(parametric_model_output, 'surface_keypoints', None)
+        pred_keypoints_3d = surface_keypoints if surface_keypoints is not None else parametric_model_output.joints
         pred_vertices = parametric_model_output.vertices
         output['pred_keypoints_3d'] = pred_keypoints_3d.reshape(batch_size, -1, 3)
         output['pred_vertices'] = pred_vertices.reshape(batch_size, -1, 3)
@@ -184,172 +188,44 @@ class AniMerPlusPlus(pl.LightningModule):
         x = batch['img']
         batch_size = x.shape[0]
         device = x.device
-        dataset_source = (batch["supercategory"] < 5)  # bird for index 0
-
         features, cls = self.forward_backbone(batch)
 
         output = dict()
         output['cls_feats'] = self.class_token_head(cls) if self.cfg.MODEL.BACKBONE.get("USE_CLS", False) else None
-        
-        num_aves = (batch_size - dataset_source.sum()).item()
-        if num_aves:
-            output['aves_output'] = self.forward_one_parametric_model(batch['focal_length'][~dataset_source],
-                                                                     features[~dataset_source], 
-                                                                     self.aves_head, 
-                                                                     self.aves)
-            # Only specific to AVES training
-            output['aves_output']['pred_mask'] = self.aves_silouette_render(output['aves_output']['pred_vertices']+output['aves_output']['pred_cam_t'].unsqueeze(1), 
-                                                 faces=self.aves.face.unsqueeze(0).repeat(batch_size-dataset_source.sum().item(), 1, 1).to(device))
-        
-        num_smal = dataset_source.sum().item()
-        if num_smal:
-            output['smal_output'] = self.forward_one_parametric_model(batch['focal_length'][dataset_source], 
-                                                                      features[dataset_source], 
-                                                                      self.smal_head, 
-                                                                      self.smal)
+
+        output['varen_output'] = self.forward_one_parametric_model(batch['focal_length'],
+                                                                   features,
+                                                                   self.varen_head,
+                                                                   self.varen)
         return output
-    
-    def compute_aves_loss(self, batch: Dict, output: Dict) -> torch.Tensor:
+
+    def compute_varen_loss(self, batch: Dict, output: Dict) -> torch.Tensor:
         """
-        Compute AVES losses given the input batch and the regression output
-        Args:
-            batch (Dict): Dictionary containing batch data
-            output (Dict): Dictionary containing the regression output
-            train (bool): Flag indicating whether it is training or validation mode
-        Returns:
-            torch.Tensor : Total loss for current batch
-        """
-        dataset_source = (batch["supercategory"] > 5)
-
-        pred_params = output['pred_params']
-        pred_mask = output['pred_mask']
-        pred_keypoints_2d = output['pred_keypoints_2d']
-        pred_keypoints_3d = output['pred_keypoints_3d']
-
-        batch_size = pred_params['pose'].shape[0]
-        
-        # Get annotations
-        gt_keypoints_2d = batch['keypoints_2d'][dataset_source][:, :18]
-        gt_keypoints_3d = batch['keypoints_3d'][dataset_source][:, :18]
-        gt_mask = batch['mask'][dataset_source]
-        gt_params = {k: v[dataset_source] for k,v in batch['smal_params'].items()}
-        has_params = {k: v[dataset_source] for k,v in batch['has_smal_params'].items()}
-        is_axis_angle = {k: v[dataset_source] for k,v in batch['smal_params_is_axis_angle'].items()}
-
-        # Compute 3D keypoint loss
-        loss_keypoints_2d = self.keypoint_2d_loss(pred_keypoints_2d, gt_keypoints_2d)
-        loss_keypoints_3d = self.keypoint_3d_loss(pred_keypoints_3d, gt_keypoints_3d, pelvis_id=0)
-        loss_mask = self.mask_loss(pred_mask, gt_mask)
-
-        # Compute loss on AVES parameters
-        loss_params = {}
-        for k, pred in pred_params.items():
-            gt = gt_params[k].view(batch_size, -1)
-            if is_axis_angle[k].all():
-                gt = aa_to_rotmat(gt.reshape(-1, 3)).view(batch_size, -1, 3, 3)
-            has_gt = has_params[k]
-            if k == "betas":
-                loss_params[k] = self.parameter_loss(pred.reshape(batch_size, -1),
-                                                     gt[:, :15].reshape(batch_size, -1),
-                                                     has_gt)
-                loss_params[k+"_re"] = torch.sum(pred[has_gt.bool()] ** 2) + torch.sum(pred[has_gt.bool()] ** 2) * 0.5
-            elif k == "bone":
-                loss_params[k] = self.parameter_loss(pred.reshape(batch_size, -1),
-                                                     gt.reshape(batch_size, -1),
-                                                     has_gt)
-                loss_params[k+"_re"] = self.posebone_prior_loss.l2_loss(pred, self.posebone_prior_loss.bone_mean, 1 - has_gt) + \
-                                       self.posebone_prior_loss.l2_loss(pred, self.posebone_prior_loss.bone_mean, has_gt) * 0.02
-            elif k == "pose":
-                loss_params[k] = self.parameter_loss(pred.reshape(batch_size, -1),
-                                                     gt[:, :24].reshape(batch_size, -1),
-                                                     has_gt)
-                pose_axis_angle = matrix_to_axis_angle(pred)
-                loss_params[k+"_re"] = self.posebone_prior_loss.l2_loss(pose_axis_angle.reshape(batch_size, -1), self.posebone_prior_loss.pose_mean, 1 - has_gt) + \
-                                       self.posebone_prior_loss.l2_loss(pose_axis_angle.reshape(batch_size, -1), self.posebone_prior_loss.pose_mean, has_gt) * 0.02
-            else:
-                loss_params[k] = self.parameter_loss(pred.reshape(batch_size, -1), 
-                                                     gt.reshape(batch_size, -1),
-                                                     has_gt)
-        
-        loss_config = self.cfg.LOSS_WEIGHTS.AVES
-        loss = loss_config['KEYPOINTS_3D'] * loss_keypoints_3d + \
-               loss_config['KEYPOINTS_2D'] * loss_keypoints_2d + \
-               sum([loss_params[k] * loss_config[k.upper()] for k in loss_params]) + \
-               loss_config['MASK'] * loss_mask
-
-        losses = dict(loss_aves=loss.detach(),
-                      loss_aves_keypoints_2d=loss_keypoints_2d.detach(),
-                      loss_aves_keypoints_3d=loss_keypoints_3d.detach(),
-                      loss_aves_mask=loss_mask.detach(),
-                      )
-        for k, v in loss_params.items():
-            losses['loss_aves_' + k] = v.detach()
-        
-        return loss, losses
-    
-    def compute_smal_loss(self, batch: Dict, output: Dict) -> torch.Tensor:
-        """
-        Compute SMAL losses given the input batch and the regression output
+        Compute VAREN losses given the input batch and the regression output.
         Args:
             batch (Dict): Dictionary containing batch data
             output (Dict): Dictionary containing the regression output
         Returns:
-            torch.Tensor : Total loss for current batch
+            torch.Tensor: Total loss for current batch and loss components.
         """
-        dataset_source = (batch["supercategory"] < 5)
-
-        pred_params = output['pred_params']
         pred_keypoints_2d = output['pred_keypoints_2d']
         pred_keypoints_3d = output['pred_keypoints_3d']
 
-        batch_size = pred_params['pose'].shape[0]
+        gt_keypoints_2d = batch['keypoints_2d']
+        gt_keypoints_3d = batch['keypoints_3d']
 
-        # Get annotations
-        gt_keypoints_2d = batch['keypoints_2d'][dataset_source]
-        gt_keypoints_3d = batch['keypoints_3d'][dataset_source]
-        gt_params = {k: v[dataset_source] for k,v in batch['smal_params'].items()}
-        has_params = {k: v[dataset_source] for k,v in batch['has_smal_params'].items()}
-        is_axis_angle = {k: v[dataset_source] for k,v in batch['smal_params_is_axis_angle'].items()}
-
-        # Compute 3D keypoint loss
         loss_keypoints_2d = self.keypoint_2d_loss(pred_keypoints_2d, gt_keypoints_2d)
         loss_keypoints_3d = self.keypoint_3d_loss(pred_keypoints_3d, gt_keypoints_3d, pelvis_id=0)
 
-        # Compute loss on SMAL parameters
-        loss_smal_params = {}
-        for k, pred in pred_params.items():
-            gt = gt_params[k].view(batch_size, -1)
-            if is_axis_angle[k].all():
-                gt = aa_to_rotmat(gt.reshape(-1, 3)).view(batch_size, -1, 3, 3)
-            has_gt = has_params[k]
-            if k == "betas":
-                loss_smal_params[k] = self.parameter_loss(pred.reshape(batch_size, -1),
-                                                            gt.reshape(batch_size, -1),
-                                                            has_gt) + \
-                                      self.shape_prior_loss(pred, batch["category"][dataset_source], has_gt)
-            elif k == "bone":
-                continue
-            else:
-                loss_smal_params[k] = self.parameter_loss(pred.reshape(batch_size, -1),
-                                                                gt.reshape(batch_size, -1),
-                                                                has_gt) + \
-                                        self.pose_prior_loss(torch.cat((pred_params["global_orient"],
-                                                                        pred_params["pose"]),
-                                                                        dim=1), has_gt) / 2.
-        
-        loss_config = self.cfg.LOSS_WEIGHTS.SMAL
+        loss_config = self.cfg.LOSS_WEIGHTS.VAREN
         loss = loss_config['KEYPOINTS_3D'] * loss_keypoints_3d + \
-               loss_config['KEYPOINTS_2D'] * loss_keypoints_2d + \
-               sum([loss_smal_params[k] * loss_config[k.upper()] for k in loss_smal_params])
+               loss_config['KEYPOINTS_2D'] * loss_keypoints_2d
 
-        losses = dict(loss_smal=loss.detach(),
-                      loss_smal_keypoints_2d=loss_keypoints_2d.detach(),
-                      loss_smal_keypoints_3d=loss_keypoints_3d.detach(),
-                      )
-        for k, v in loss_smal_params.items():
-            losses['loss_smal_' + k] = v.detach()
-
+        losses = dict(loss_varen=loss.detach(),
+                      loss_varen_keypoints_2d=loss_keypoints_2d.detach(),
+                      loss_varen_keypoints_3d=loss_keypoints_3d.detach())
         return loss, losses
+
 
     def compute_loss(self, batch: Dict, output: Dict, train: bool = True) -> torch.Tensor:
         """
@@ -363,25 +239,19 @@ class AniMerPlusPlus(pl.LightningModule):
         """
         x = batch['img']
         device, dtype = x.device, x.dtype
-        if 'aves_output' in output:
-            loss_aves, losses_aves = self.compute_aves_loss(batch, output['aves_output'])
+        if 'varen_output' in output:
+            loss_varen, losses_varen = self.compute_varen_loss(batch, output['varen_output'])
         else:
-            loss_aves, losses_aves = torch.tensor(0.0, device=device, dtype=dtype), {}
-        if 'smal_output' in output:
-            loss_smal, losses_smal = self.compute_smal_loss(batch, output['smal_output'])
-        else:
-            loss_smal, losses_smal = torch.tensor(0.0, device=device, dtype=dtype), {}
+            loss_varen, losses_varen = torch.tensor(0.0, device=device, dtype=dtype), {}
         loss_supcon = self.supcon_loss(output['cls_feats'], labels=batch['category']) if self.cfg.MODEL.BACKBONE.get("USE_CLS", False) \
                       else torch.tensor(0.0, device=device, dtype=dtype)
-        loss = loss_aves + loss_smal + loss_supcon * self.cfg.LOSS_WEIGHTS['SUPCON']
+        loss = loss_varen + loss_supcon * self.cfg.LOSS_WEIGHTS['SUPCON']
 
         # Saving loss
         losses = {}
         losses['loss'] = loss.detach()
         losses['loss_supcon'] = loss_supcon.detach()
-        for k, v in losses_aves.items():
-            losses[k] = v.detach()
-        for k, v in losses_smal.items():
+        for k, v in losses_varen.items():
             losses[k] = v.detach()
         output['losses'] = losses
         return loss
@@ -422,27 +292,19 @@ class AniMerPlusPlus(pl.LightningModule):
         num_images = min(batch_size, self.cfg.EXTRA.NUM_LOG_IMAGES)
         dataset_source = (batch["supercategory"] < 5)[:num_images]  # bird for index 0
 
-        num_aves = (num_images - dataset_source[:num_images].sum()).item()
-        if num_aves:
-            rend_imgs_aves = self.aves_mesh_renderer.visualize_tensorboard( output['aves_output']['pred_vertices'][:num_aves].detach().cpu().numpy(),
-                                                                            output['aves_output']['pred_cam_t'][:num_aves].detach().cpu().numpy(),
-                                                                            images[:num_images][~dataset_source].cpu().numpy(),
-                                                                            self.cfg.AVES.get("FOCAL_LENGTH", 2167),
-                                                                            output['aves_output']['pred_keypoints_2d'][:num_aves].detach().cpu().numpy(),
-                                                                            gt_keypoints_2d[:num_images][~dataset_source][:, :18].cpu().numpy(),
+        if 'varen_output' in output:
+            # .float() before .numpy() -- under mixed-precision training these
+            # are BFloat16, which numpy can't convert directly (confirmed by
+            # hitting this crash on the first real fast_dev_run training step).
+            rend_imgs_varen = self.varen_mesh_renderer.visualize_tensorboard(
+                                                                            output['varen_output']['pred_vertices'].detach().float().cpu().numpy(),
+                                                                            output['varen_output']['pred_cam_t'].detach().float().cpu().numpy(),
+                                                                            images[:num_images].float().cpu().numpy(),
+                                                                            self.cfg.VAREN.get("FOCAL_LENGTH", 1000),
+                                                                            output['varen_output']['pred_keypoints_2d'].detach().float().cpu().numpy(),
+                                                                            gt_keypoints_2d[:num_images].float().cpu().numpy(),
                                                                             )
-            rend_imgs.extend(rend_imgs_aves)
-
-        num_smal = dataset_source[:num_images].sum().item()
-        if num_smal:
-            rend_imgs_smal = self.smal_mesh_renderer.visualize_tensorboard( output['smal_output']['pred_vertices'][:num_smal].detach().cpu().numpy(),
-                                                                            output['smal_output']['pred_cam_t'][:num_smal].detach().cpu().numpy(),
-                                                                            images[:num_images][dataset_source].cpu().numpy(),
-                                                                            self.cfg.SMAL.get("FOCAL_LENGTH", 1000),
-                                                                            output['smal_output']['pred_keypoints_2d'][:num_smal].detach().cpu().numpy(),
-                                                                            gt_keypoints_2d[:num_images][dataset_source].cpu().numpy(),
-                                                                            )
-            rend_imgs.extend(rend_imgs_smal)
+            rend_imgs.extend(rend_imgs_varen)
 
         rend_imgs = make_grid(rend_imgs, nrow=5, padding=2)
         if write_to_summary_writer:
@@ -464,8 +326,7 @@ class AniMerPlusPlus(pl.LightningModule):
         """
         Run a full training step
         Args:
-            batch (Dict): Dictionary containing {'img', 'mask', 'keypoints_2d', 'keypoints_3d', 'orig_keypoints_2d',
-                                                 'aves_params', 'aves_params_is_axis_angle', 'focal_length'}
+            batch (Dict): Dictionary containing batch tensors such as 'img', 'mask', 'keypoints_2d', 'keypoints_3d', 'category', 'supercategory', and 'focal_length'.
         Returns:
             Dict: Dictionary containing regression output.
         """

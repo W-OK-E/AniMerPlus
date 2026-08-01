@@ -85,11 +85,15 @@ def render_keypoint(img: np.array, keypoint: np.array, threshold=0.1,
                 12, 18,  13, 18,  14, 8,  15, 9,  16, 10,  17, 11,  18, 24,  19, 25,  20, 0,  21, 1,  22, 24,
                 23, 24,  25, 7]
     elif keypoint.shape[0] == 18:
-        pairs = [9, 8,  8, 2,  2, 3,  3, 4,  2, 0,  2, 1,  4, 5, 
-                 5, 14,  14, 15,  4, 6,  6, 7,  7, 11,  11, 10,  
+        pairs = [9, 8,  8, 2,  2, 3,  3, 4,  2, 0,  2, 1,  4, 5,
+                 5, 14,  14, 15,  4, 6,  6, 7,  7, 11,  11, 10,
                  7, 13,  13, 12,  5, 16,  5, 17]
     else:
-        raise ValueError("Keypoint shape not supported")
+        # No hand-authored skeleton connectivity for this keypoint convention
+        # (e.g. VAREN's 43 named surface keypoints). Draw the keypoints as
+        # unconnected dots rather than raising -- this is only used for
+        # tensorboard visualization, not for any loss/metric computation.
+        pairs = None
     pairs = np.array(pairs).reshape(-1, 2) if pairs is not None else None
     colors = [255., 0., 85.,
               255., 0., 0.,

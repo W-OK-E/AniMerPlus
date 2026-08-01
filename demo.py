@@ -34,7 +34,7 @@ def main():
     parser.add_argument('--save_mesh', dest='save_mesh', action='store_true', default=False,
                         help='If set, save meshes to disk also')
     parser.add_argument('--batch_size', type=int, default=1, help='Batch size for inference/fitting')
-    parser.add_argument('--file_type', nargs='+', default=['*.jpg', '*.png', '*JPEG'],
+    parser.add_argument('--file_type', nargs='+', default=['*.jpg', '*.png', '*JPEG', '*.jpeg'],
                         help='List of file extensions to consider')
     parser.add_argument('--animal_type', type=str, choices=["mammal", "bird"], default="bird",
                         help='Type of animal to render (mammal or bird)')
@@ -60,15 +60,17 @@ def main():
     # Make output directory if it does not exist
     os.makedirs(args.out_folder, exist_ok=True)
 
+    print("Loading model and detector...")
     # Load detector
     cfg = detectron2.config.get_cfg()
     cfg.merge_from_file(model_zoo.get_config_file("COCO-Detection/faster_rcnn_X_101_32x8d_FPN_3x.yaml"))
     cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = 0.5 
     cfg.MODEL.WEIGHTS = "https://dl.fbaipublicfiles.com/detectron2/COCO-Detection/faster_rcnn_X_101_32x8d_FPN_3x/139173657/model_final_68b088.pkl"
     detector = detectron2.engine.DefaultPredictor(cfg)
-
     img_paths = sorted([img for end in args.file_type for img in Path(args.img_folder).glob(end)])
+    print(f"Found {len(img_paths)} images in {args.img_folder} with extensions {args.file_type}")
     for img_path in img_paths:
+        print("Processing image:", img_path)
         img_cv2 = cv2.imread(str(img_path))
         img_cv2 = cv2.cvtColor(img_cv2, cv2.COLOR_BGR2RGB)
 
@@ -138,9 +140,11 @@ def main():
                 # Add all verts and cams to list
                 verts = out['pred_vertices'][n].detach().cpu().numpy()
                 cam_t = pred_cam_t_full[n]
+                print("Processed animal ID:", animal_id)
 
                 # Save all meshes to disk
                 if args.save_mesh:
+                    print(f"Saving mesh for {img_fn}_{animal_id}.obj")
                     camera_translation = cam_t.copy()
                     tmesh = renderer.vertices_to_trimesh(verts, camera_translation, LIGHT_BLUE)
                     tmesh.export(os.path.join(args.out_folder, f'{img_fn}_{animal_id}.obj'))

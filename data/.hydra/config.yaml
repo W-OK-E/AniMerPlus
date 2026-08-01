@@ -1,0 +1,138 @@
+task_name: train
+tags:
+- dev
+train: true
+test: false
+ckpt_path: null
+seed: null
+trainer:
+  _target_: pytorch_lightning.Trainer
+  default_root_dir: ${paths.output_dir}
+  accelerator: gpu
+  devices: 1
+  deterministic: false
+  num_sanity_val_steps: 0
+  log_every_n_steps: ${GENERAL.LOG_STEPS}
+  val_check_interval: ${GENERAL.VAL_STEPS}
+  check_val_every_n_epoch: ${GENERAL.VAL_EPOCHS}
+  precision: 16-mixed
+  max_steps: ${GENERAL.TOTAL_STEPS}
+  limit_val_batches: 80
+paths:
+  root_dir: ${oc.env:PROJECT_ROOT}
+  data_dir: ${paths.root_dir}/data/
+  log_dir: logs/
+  output_dir: ${hydra:runtime.output_dir}
+  work_dir: ${hydra:runtime.cwd}
+extras:
+  ignore_warnings: false
+  enforce_tags: true
+  print_config: true
+exp_name: AniMerPlus
+SMAL:
+  DATA_DIR: data/
+  MODEL_PATH: data/smal/my_smpl_00781_4_all.pkl
+  SHAPE_PRIOR_PATH: data/smal/my_smpl_data_00781_4_all.pkl
+  POSE_PRIOR_PATH: data/smal/walking_toy_symmetric_pose_prior_with_cov_35parts.pkl
+  NUM_JOINTS: 34
+  FOCAL_LENGTH: 1000
+DATASETS:
+  CONFIG:
+    SCALE_FACTOR: 0.3
+    ROT_FACTOR: 30
+    TRANS_FACTOR: 0.02
+    COLOR_SCALE: 0.2
+    ROT_AUG_RATE: 0.6
+    TRANS_AUG_RATE: 0.5
+    DO_FLIP: false
+    FLIP_AUG_RATE: 0.0
+    EXTREME_CROP_AUG_RATE: 0.0
+    EXTREME_CROP_AUG_LEVEL: 1
+GENERAL:
+  TOTAL_STEPS: 1400000
+  LOG_STEPS: 10000
+  VAL_STEPS: 3000
+  VAL_EPOCHS: 100
+  CHECKPOINT_EPOCHS: 20
+  CHECKPOINT_SAVE_TOP_K: 1
+  NUM_WORKERS: 64
+  PREFETCH_FACTOR: 2
+LOSS_WEIGHTS:
+  AVES:
+    KEYPOINTS_3D: 0.05
+    KEYPOINTS_2D: 0.01
+    GLOBAL_ORIENT: 0.001
+    POSE: 0.001
+    BETAS: 0.0005
+    BONE: 0.002
+    ADVERSARIAL: 0.0
+    MASK: 0.02
+    POSE_RE: 0.05
+    BETAS_RE: 0.001
+    BONE_RE: 0.1
+  SMAL:
+    KEYPOINTS_3D: 0.05
+    KEYPOINTS_2D: 0.01
+    GLOBAL_ORIENT: 0.001
+    POSE: 0.001
+    BETAS: 0.0005
+  SUPCON: 0.0005
+TRAIN:
+  LR: 1.25e-06
+  WEIGHT_DECAY: 0.0001
+  BATCH_SIZE: 16
+  LOSS_REDUCTION: mean
+  NUM_TRAIN_SAMPLES: 2
+  NUM_TEST_SAMPLES: 64
+  POSE_2D_NOISE_RATIO: 0.01
+  SMPL_PARAM_NOISE_RATIO: 0.005
+MODEL:
+  IMAGE_SIZE: 256
+  IMAGE_MEAN:
+  - 0.485
+  - 0.456
+  - 0.406
+  IMAGE_STD:
+  - 0.229
+  - 0.224
+  - 0.225
+  BACKBONE:
+    TYPE: vithmoe
+    PRETRAINED_WEIGHTS: data/vitmoe.pth
+  AVES_HEAD:
+    TYPE: transformer_decoder
+    IN_CHANNELS: 2048
+    IEF_ITERS: 1
+    TRANSFORMER_DECODER:
+      depth: 6
+      heads: 8
+      mlp_dim: 1024
+      dim_head: 64
+      dropout: 0.0
+      emb_dropout: 0.0
+      norm: layer
+      context_dim: 1280
+  SMAL_HEAD:
+    TYPE: transformer_decoder
+    IN_CHANNELS: 2048
+    IEF_ITERS: 1
+    TRANSFORMER_DECODER:
+      depth: 6
+      heads: 8
+      mlp_dim: 1024
+      dim_head: 64
+      dropout: 0.0
+      emb_dropout: 0.0
+      norm: layer
+      context_dim: 1280
+  CLASS_TOKEN_HEAD:
+    embed_dim: 1280
+    hidden_dim: 4096
+    output_dim: 256
+    num_layers: 3
+    last_bn: true
+AVES:
+  FOCAL_LENGTH: 2167
+  MODEL_PATH: data/aves/aves_high_res.pt
+  POSE_PRIOR_PATH: data/aves/aves_high_res.pt
+  NUM_JOINTS: 24

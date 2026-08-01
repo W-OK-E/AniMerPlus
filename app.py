@@ -27,7 +27,7 @@ model_cfg = get_config(path_model_cfg)
 local_dir = "data/AniMerPlus/"
 PATH_CHECKPOINT = os.path.join(local_dir, "checkpoint.ckpt")
 model = AniMerPlusPlus.load_from_checkpoint(checkpoint_path=PATH_CHECKPOINT, map_location="cpu",
-                                            cfg=model_cfg, strict=False, weights_only=True)
+                                            cfg=model_cfg, strict=False, weights_only=False)
 device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 model = model.to(device)
 model.eval()

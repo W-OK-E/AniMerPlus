@@ -94,10 +94,22 @@ def pointcloud(points: np.ndarray):
 
 
 class Evaluator:
-    def __init__(self, smal_model, image_size: int=256, pelvis_ind: int = 7):
+    def __init__(self, smal_model, image_size: int=256, pelvis_ind: int = 7, model_type: str = 'smal'):
+        """
+        Args:
+            smal_model: parametric body model used to regress GT vertices for the
+                PA-MPVPE metric (despite the name, this can be a SMAL/AVES model
+                *or* the VAREN wrapper (amr.models.varen_warapper.VAREN) -- see
+                `model_type`).
+            model_type (str): 'smal' (default, backward compatible) or 'varen'.
+                Selects which ground-truth parameter dict key
+                ('smal_params'/'has_smal_params' vs 'varen_params'/'has_varen_params')
+                and which forward helper (`smal_forward` vs `varen_forward`) to use.
+        """
         self.pelvis_ind = pelvis_ind
         self.smal_model = smal_model
         self.image_size = image_size
+        self.model_type = model_type
     
     def compute_pck(self, output: Dict, batch: Dict, pck_threshold: Union[List, None]):
         pred_keypoints_2d = output['pred_keypoints_2d'].detach().cpu()
@@ -141,15 +153,20 @@ class Evaluator:
             batch: model input
         Returns: evaluate metric
         """
-        if batch['has_smal_params']["betas"].sum() == 0:
-            return 0., 0., 0., [0., 0.], 0.
+        has_params_key = 'has_varen_params' if self.model_type == 'varen' else 'has_smal_params'
+        if batch[has_params_key]["betas"].sum() == 0:
+            # NOTE: fixed to match the 2-value return of the normal path below --
+            # the original SMAL-only version of this guard returned a 5-tuple,
+            # which would have raised "too many values to unpack" at every call
+            # site (`pa_mpjpe, pa_mpvpe = evaluator.eval_3d(...)`).
+            return 0., 0.
 
         pred_keypoints_3d = output["pred_keypoints_3d"].detach()
         pred_keypoints_3d = pred_keypoints_3d[:, None, :, :]
         batch_size = pred_keypoints_3d.shape[0]
         num_samples = pred_keypoints_3d.shape[1]
         gt_keypoints_3d = batch['keypoints_3d'][:, :, :-1].unsqueeze(1).repeat(1, num_samples, 1, 1)
-        gt_vertices = self.smal_forward(batch)
+        gt_vertices = self.varen_forward(batch) if self.model_type == 'varen' else self.smal_forward(batch)
         
         # Align predictions and ground truth such that the pelvis location is at the origin
         pred_keypoints_3d -= pred_keypoints_3d[:, :, [self.pelvis_ind]]
@@ -186,3 +203,18 @@ class Evaluator:
             smal_output = self.smal_model(**smal_params)
         vertices = smal_output.vertices
         return vertices
+
+    def varen_forward(self, batch: Dict):
+        """
+        Regress GT vertices from the VAREN ground-truth params stored under
+        batch['varen_params'] (see amr/datasets/varen_dataset.py). Unlike
+        smal_forward, no axis-angle -> rotation-matrix conversion is needed:
+        the VAREN wrapper (amr.models.varen_warapper.VAREN) accepts raw
+        axis-angle global_orient/body_pose directly via pose2rot=True.
+        """
+        device = batch['img'].device
+        varen_params = {k: v.to(device) for k, v in batch['varen_params'].items()
+                        if k in ('global_orient', 'body_pose', 'betas', 'transl')}
+        with torch.no_grad():
+            varen_output = self.smal_model(**varen_params, pose2rot=True)
+        return varen_output.vertices

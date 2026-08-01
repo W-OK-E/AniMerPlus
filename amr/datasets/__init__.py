@@ -5,6 +5,7 @@ import pytorch_lightning as pl
 from yacs.config import CfgNode
 from .animal3d_dataset import *
 from .cub17_dataset import *
+from .varen_dataset import VARENTrain3DDataset
 from .animerpp_dataset import AniMerPlusPlusDataset
 from amr.utils.pylogger import get_pylogger
 
@@ -37,9 +38,23 @@ class AniMerPlusPlusDataModule(pl.LightningDataModule):
             self.weight_sampler = WeightedRandomSampler(weights=self.train_dataset.weights, 
                                                         num_samples=len(self.train_dataset))
         if self.val_dataset is None:
-            self.val_dataset = Train3DDataset(self.cfg, is_train=False,
-                                              root_image=self.cfg.DATASETS.ANIMAL3D.ROOT_IMAGE,
-                                              json_file=self.cfg.DATASETS.ANIMAL3D.JSON_FILE.TEST)
+            # AniMerPlusPlus.forward_step is VAREN-only (see amr/models/animerpp.py):
+            # it always predicts the 43 VAREN surface keypoints, regardless of which
+            # dataset a batch came from. Validating against ANIMAL3D's SMAL-shaped
+            # ground truth (26 keypoints) would therefore fail shape-wise inside
+            # compute_varen_loss. Prefer the VAREN-shaped HORSE dataset for
+            # validation whenever it's configured; fall back to the legacy ANIMAL3D
+            # dataset only for backward compatibility (e.g. inspecting the backbone/
+            # renderer without a VAREN validation split configured yet).
+            dataset_configs = self.cfg.DATASETS
+            if dataset_configs.get("HORSE", None) is not None and dataset_configs.HORSE.WEIGHT > 0:
+                self.val_dataset = VARENTrain3DDataset(self.cfg, is_train=False,
+                                                        root_image=dataset_configs.HORSE.ROOT_IMAGE,
+                                                        json_file=dataset_configs.HORSE.JSON_FILE.TEST)
+            else:
+                self.val_dataset = Train3DDataset(self.cfg, is_train=False,
+                                                  root_image=self.cfg.DATASETS.ANIMAL3D.ROOT_IMAGE,
+                                                  json_file=self.cfg.DATASETS.ANIMAL3D.JSON_FILE.TEST)
 
     def train_dataloader(self) -> Dict:
         """

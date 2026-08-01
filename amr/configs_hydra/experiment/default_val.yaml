@@ -5,6 +5,10 @@ DATASETS:
     ROOT_IMAGE: /path/to/animal3d/
     JSON_FILE:
       TEST: /path/to/animal3d/test.json
+  HORSE:
+    ROOT_IMAGE: /path/to/horse/
+    JSON_FILE:
+      TEST: /path/to/horse/test.json
   CONFIG:
     SCALE_FACTOR: 0.0
     ROT_FACTOR: 0

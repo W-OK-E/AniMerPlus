@@ -2,6 +2,7 @@ import torch
 from torch.utils.data import ConcatDataset
 from .animal3d_dataset import *
 from .cub17_dataset import *
+from .varen_dataset import VARENTrain3DDataset
 from yacs.config import CfgNode
 from ..utils.pylogger import get_pylogger
 
@@ -35,6 +36,14 @@ class AniMerPlusPlusDataset(torch.utils.data.Dataset):
             datasets.append(ctrlaves3d_dataset)
             weights.extend([dataset_configs.CTRLAVES3D.WEIGHT] * len(ctrlaves3d_dataset))
             log.info("CTRLAVES3D Dataset loading finish, weight: {}".format(dataset_configs.CTRLAVES3D.WEIGHT))
+
+        if dataset_configs.get("HORSE", None) is not None and dataset_configs.HORSE.WEIGHT > 0:
+            self.horse_dataset = VARENTrain3DDataset(cfg, is_train=True,
+                                                      root_image=dataset_configs.HORSE.ROOT_IMAGE,
+                                                      json_file=dataset_configs.HORSE.JSON_FILE.TRAIN)
+            datasets.append(self.horse_dataset)
+            weights.extend([dataset_configs.HORSE.WEIGHT] * len(self.horse_dataset))
+            log.info("HORSE (VAREN) Dataset loading finish, weight: {}".format(dataset_configs.HORSE.WEIGHT))
 
         # Concatenate all enabled datasets
         if datasets:
