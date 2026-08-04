@@ -297,11 +297,11 @@ class AniMerPlusPlus(pl.LightningModule):
             # are BFloat16, which numpy can't convert directly (confirmed by
             # hitting this crash on the first real fast_dev_run training step).
             rend_imgs_varen = self.varen_mesh_renderer.visualize_tensorboard(
-                                                                            output['varen_output']['pred_vertices'].detach().float().cpu().numpy(),
-                                                                            output['varen_output']['pred_cam_t'].detach().float().cpu().numpy(),
+                                                                            output['varen_output']['pred_vertices'].detach().float().cpu().numpy()[:num_images],
+                                                                            output['varen_output']['pred_cam_t'].detach().float().cpu().numpy()[:num_images],
                                                                             images[:num_images].float().cpu().numpy(),
                                                                             self.cfg.VAREN.get("FOCAL_LENGTH", 1000),
-                                                                            output['varen_output']['pred_keypoints_2d'].detach().float().cpu().numpy(),
+                                                                            output['varen_output']['pred_keypoints_2d'].detach().float().cpu().numpy()[:num_images],
                                                                             gt_keypoints_2d[:num_images].float().cpu().numpy(),
                                                                             )
             rend_imgs.extend(rend_imgs_varen)

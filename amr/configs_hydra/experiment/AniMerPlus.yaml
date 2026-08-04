@@ -149,7 +149,7 @@ SMAL:
 
 VAREN:
   FOCAL_LENGTH: 1000
-  MODEL_PATH: /home/om/mpi/VAREN/models
+  MODEL_PATH: /lustre/home/okumar/VAREN/models
   NUM_JOINTS: 37
   NUM_BETAS: 39
   USE_MUSCLE_DEFORMATIONS: false
