@@ -58,6 +58,12 @@ MODEL:
     USE_CLS: true
     TYPE: vithmoe
     PRETRAINED_WEIGHTS: data/vitmoe.pth
+    # Which parts of the ViT-MoE backbone stay trainable. All off by default
+    # (fully trainable, matches prior behavior) -- override per-run, e.g.
+    # `+experiment.MODEL.BACKBONE.FROZEN_STAGES=8`.
+    FROZEN_STAGES: -1     # -1 = nothing frozen; N = freeze patch_embed + blocks[1..N] (block 0 stays trainable)
+    FREEZE_ATTN: false    # freeze every block's attention + its preceding norm1, all 32 blocks
+    FREEZE_FFN: false     # freeze patch_embed, pos_embed, and every block's MLP + its preceding norm2
   AVES_HEAD:
     TYPE: transformer_decoder
     IN_CHANNELS: 2048

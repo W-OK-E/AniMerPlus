@@ -67,6 +67,16 @@ def main(cfg: DictConfig) -> Optional[float]:
         dirpath=os.path.join(cfg.paths.output_dir, 'checkpoints'),
         # every_n_train_steps=cfg.GENERAL.CHECKPOINT_STEPS,
         every_n_epochs=cfg.GENERAL.CHECKPOINT_EPOCHS,
+        # Lightning's ModelCheckpoint defers every_n_epochs entirely to
+        # on_validation_end whenever check_val_every_n_epoch != 1 (it can't
+        # otherwise know when validation last ran) -- see
+        # ModelCheckpoint._should_save_on_train_epoch_end. Since VAL_EPOCHS
+        # decouples validation cadence from CHECKPOINT_EPOCHS, that silently
+        # makes checkpointing (including save_last) wait for the next
+        # validation epoch no matter what CHECKPOINT_EPOCHS says. Force
+        # saving at train-epoch-end so CHECKPOINT_EPOCHS is honored on its
+        # own cadence.
+        save_on_train_epoch_end=True,
         save_last=True,
         save_top_k=cfg.GENERAL.CHECKPOINT_SAVE_TOP_K,
     )

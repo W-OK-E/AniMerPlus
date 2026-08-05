@@ -81,6 +81,12 @@ def vithmoe(cfg):
         drop_path_rate=0.55,
         part_features=1280 // 4,
         num_expert=cfg.MODEL.BACKBONE.get("NUM_EXPERT", 2),
+        # ViTMoE._freeze_stages() already implements this; it just never had a
+        # config path in. -1/False/False (all defaults) reproduces the
+        # previous fully-trainable-backbone behavior exactly.
+        frozen_stages=cfg.MODEL.BACKBONE.get("FROZEN_STAGES", -1),
+        freeze_attn=cfg.MODEL.BACKBONE.get("FREEZE_ATTN", False),
+        freeze_ffn=cfg.MODEL.BACKBONE.get("FREEZE_FFN", False),
     )
 
 
