@@ -62,6 +62,8 @@ def main(cfg: DictConfig) -> Optional[float]:
                                default_hp_metric=False)
     loggers = [logger]
 
+    checkpoint_path = os.path.join(cfg.paths.output_dir, 'checkpoints')
+    os.makedirs(checkpoint_path, exist_ok=True)
     # Setup checkpoint saving
     checkpoint_callback = pl.callbacks.ModelCheckpoint(
         dirpath=os.path.join(cfg.paths.output_dir, 'checkpoints'),
@@ -80,7 +82,6 @@ def main(cfg: DictConfig) -> Optional[float]:
         save_last=True,
         save_top_k=cfg.GENERAL.CHECKPOINT_SAVE_TOP_K,
     )
-
     lr_monitor = pl.callbacks.LearningRateMonitor(logging_interval='step')
     callbacks = [
         checkpoint_callback,
