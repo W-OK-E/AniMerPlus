@@ -32,10 +32,29 @@ class AniMerPlusPlus(pl.LightningModule):
         # Create backbone feature extractor
         self.backbone = create_backbone(cfg)
         if cfg.MODEL.BACKBONE.get('PRETRAINED_WEIGHTS', None):
-            log.info(f'Loading backbone weights from {cfg.MODEL.BACKBONE.PRETRAINED_WEIGHTS}')
-            state_dict = torch.load(cfg.MODEL.BACKBONE.PRETRAINED_WEIGHTS, map_location='cpu', weights_only=True)
-            state_dict = {k.replace('backbone.', ''): v for k, v in state_dict.items()}
+            weights_path = cfg.MODEL.BACKBONE.PRETRAINED_WEIGHTS
+            log.info(f'Loading backbone weights from {weights_path}')
+            checkpoint = torch.load(weights_path, map_location='cpu', weights_only=False)
+            # Two supported formats:
+            #  - a bare backbone-only state dict (e.g. data/vitmoe.pth) -- flat
+            #    tensor dict, no 'state_dict' wrapper.
+            #  - a full AniMerPlusPlus Lightning checkpoint (e.g. a prior run's
+            #    checkpoint.ckpt) -- weights for every submodule live under
+            #    checkpoint['state_dict'], each key prefixed with its module
+            #    name ('backbone.', 'smal_head.', 'varen_head.', etc., possibly
+            #    from an older head layout than this run's). Only pull out the
+            #    'backbone.' keys -- everything else may not even correspond to
+            #    a submodule that still exists.
+            if 'state_dict' in checkpoint:
+                state_dict = {
+                    k[len('backbone.'):]: v
+                    for k, v in checkpoint['state_dict'].items()
+                    if k.startswith('backbone.')
+                }
+            else:
+                state_dict = {k.replace('backbone.', ''): v for k, v in checkpoint.items()}
             missing_keys, unexpected_keys = self.backbone.load_state_dict(state_dict, strict=False)
+            log.info(f'Backbone weights loaded (missing_keys={len(missing_keys)}, unexpected_keys={len(unexpected_keys)})')
     
         # Create VAREN head
         self.varen_head = build_varen_head(cfg)
