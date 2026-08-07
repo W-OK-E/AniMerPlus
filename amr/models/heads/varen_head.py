@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import einops
 from ..components.pose_transformer import TransformerDecoder
+from ...utils.geometry import rot6d_to_rotmat
 
 
 def build_varen_head(cfg):
@@ -16,10 +17,10 @@ class VARENTransformerDecoderHead(nn.Module):
     def __init__(self, cfg):
         super().__init__()
         self.cfg = cfg
-        self.joint_rep_type = cfg.MODEL.VAREN_HEAD.get('JOINT_REP', 'aa')
-        if self.joint_rep_type != 'aa':
-            raise ValueError('VAREN head currently supports only aa joint representation')
-        self.joint_rep_dim = 3
+        self.joint_rep_type = cfg.MODEL.VAREN_HEAD.get('JOINT_REP', '6d')
+        if self.joint_rep_type not in ('6d', 'aa'):
+            raise ValueError('Unknown VAREN head joint representation: {}'.format(self.joint_rep_type))
+        self.joint_rep_dim = {'6d': 6, 'aa': 3}[self.joint_rep_type]
         npose = self.joint_rep_dim * (cfg.VAREN.NUM_JOINTS + 1)
         self.input_is_mean_shape = cfg.MODEL.VAREN_HEAD.get('TRANSFORMER_INPUT', 'zero') == 'mean_shape'
         transformer_args = dict(
@@ -71,9 +72,19 @@ class VARENTransformerDecoderHead(nn.Module):
             pred_betas = self.decshape(token_out) + pred_betas
             pred_cam = self.deccam(token_out) + pred_cam
 
-        pred_pose = pred_pose.view(batch_size, self.cfg.VAREN.NUM_JOINTS + 1, 3)
-        global_orient = pred_pose[:, 0]
-        body_pose = pred_pose[:, 1:].reshape(batch_size, -1)
+        num_joints = self.cfg.VAREN.NUM_JOINTS + 1
+        pred_pose = pred_pose.view(batch_size, num_joints, self.joint_rep_dim)
+        if self.joint_rep_type == '6d':
+            # continuous rotation representation -> rotation matrices (avoids
+            # the raw axis-angle discontinuity -- see .agent/Checks.md,
+            # "rotation representation" finding). Same conversion smal_head.py
+            # already uses for its own (working) 6d path.
+            pred_pose = rot6d_to_rotmat(pred_pose.reshape(-1, 6)).view(batch_size, num_joints, 3, 3)
+            global_orient = pred_pose[:, [0]]  # (B, 1, 3, 3)
+            body_pose = pred_pose[:, 1:]  # (B, NUM_JOINTS, 3, 3)
+        else:
+            global_orient = pred_pose[:, 0]  # (B, 3)
+            body_pose = pred_pose[:, 1:].reshape(batch_size, -1)  # (B, NUM_JOINTS*3)
 
         pred_varen_params = {
             'global_orient': global_orient,

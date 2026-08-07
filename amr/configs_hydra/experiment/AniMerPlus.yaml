@@ -95,7 +95,7 @@ MODEL:
     IN_CHANNELS: 2048
     IEF_ITERS: 1
     TRANSFORMER_INPUT: zero
-    JOINT_REP: aa
+    JOINT_REP: 6d
     TRANSFORMER_DECODER:
       depth: 6
       heads: 8

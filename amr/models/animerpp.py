@@ -16,6 +16,17 @@ from .varen_warapper import VAREN
 log = get_pylogger(__name__)
 
 
+def _varen_native_to_dataset_frame(x: torch.Tensor) -> torch.Tensor:
+    """VAREN's raw output axes (X=nose-to-tail, Y=left-right, Z=up) do not match
+    the axes the genzoo-generated ground truth uses (X=nose-to-tail, Y=up,
+    Z=left-right-negated) -- confirmed by feeding real dataset pose/shape
+    values through this exact VAREN call and comparing to that sample's own
+    exported keypoints (see .agent/Checks.md, "axis mismatch" finding).
+    Without this remap, the keypoint losses compare "up" against "sideways"
+    on two of the three axes for every sample. new_y=old_z, new_z=-old_y."""
+    return torch.stack([x[..., 0], x[..., 2], -x[..., 1]], dim=-1)
+
+
 class AniMerPlusPlus(pl.LightningModule):
     def __init__(self, cfg: CfgNode, init_renderer: bool = True):
         """
@@ -154,21 +165,31 @@ class AniMerPlusPlus(pl.LightningModule):
         # Compute model vertices, joints and the projected joints.
         pred_params['betas'] = pred_params['betas'].reshape(batch_size, -1)
         if 'body_pose' in pred_params:
-            pred_params['body_pose'] = pred_params['body_pose'].reshape(batch_size, -1)
-            global_orient = pred_params['global_orient'].reshape(batch_size, 3)
-            body_pose = pred_params['body_pose']
             betas = pred_params['betas']
-            # NOTE: the VAREN head (joint_rep_type == 'aa') predicts raw axis-angle
-            # values (3 numbers per joint), not rotation matrices, so pose2rot must
-            # be True here. With pose2rot=False, VAREN.lbs() tries to view the
-            # concatenated [global_orient, body_pose] tensor as (B, -1, 3, 3) which
-            # is not divisible by 9 for VAREN's 38-joint layout and raises a shape
-            # error -- this was a bug in the original VAREN wiring.
+            # VAREN_HEAD.JOINT_REP decides what shape decpose's raw output was
+            # converted to (see varen_head.py): 'aa' -- 3 raw numbers per joint,
+            # fed straight to VAREN with pose2rot=True; '6d' (default) -- already
+            # converted to rotation matrices there, fed with pose2rot=False. Read
+            # from the head itself rather than assuming one or the other, so both
+            # representations work through this same call.
+            is_axis_angle = head.joint_rep_type == 'aa'
+            if is_axis_angle:
+                global_orient = pred_params['global_orient'].reshape(batch_size, 3)
+                body_pose = pred_params['body_pose'].reshape(batch_size, -1)
+            else:
+                global_orient = pred_params['global_orient'].reshape(batch_size, 1, 3, 3)
+                body_pose = pred_params['body_pose'].reshape(batch_size, -1, 3, 3)
             parametric_model_output = parametric_model(global_orient=global_orient,
                                                       body_pose=body_pose,
                                                       betas=betas,
                                                       transl=None,
-                                                      pose2rot=True)
+                                                      pose2rot=is_axis_angle)
+            # fix axis mismatch: put VAREN's raw output into the dataset's frame
+            parametric_model_output.vertices = _varen_native_to_dataset_frame(parametric_model_output.vertices)
+            if getattr(parametric_model_output, 'surface_keypoints', None) is not None:
+                parametric_model_output.surface_keypoints = _varen_native_to_dataset_frame(parametric_model_output.surface_keypoints)
+            if getattr(parametric_model_output, 'joints', None) is not None:
+                parametric_model_output.joints = _varen_native_to_dataset_frame(parametric_model_output.joints)
         else:
             pred_params['global_orient'] = pred_params['global_orient'].reshape(batch_size, -1, 3, 3)
             pred_params['pose'] = pred_params['pose'].reshape(batch_size, -1, 3, 3)
