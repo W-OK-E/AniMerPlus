@@ -27,12 +27,21 @@ check is about whether gradients flow correctly and the geometry is
 learnable at all, not about final training quality, so pretrained features
 aren't needed and loading them (a multi-GB file) would only slow this down.
 
+By default also saves a rendered grid (--render-out, default
+orientation_with_vit_render.png) using the same MeshRenderer.visualize_tensorboard
+call the real training loop logs to TensorBoard with: per sample, [input image |
+predicted mesh, front view | predicted mesh, side view | predicted 2D keypoints on
+the image | GT 2D keypoints on the image]. Needs pyrender/EGL (same as training) --
+pass --no-render to skip it if that's not set up in this environment; rendering
+failures are reported but don't affect the PASS/FAIL verdict, which is numeric.
+
 Usage:
     python scripts/verify_orientation_with_vit.py \
         --json-file /path/to/horse_dataset/train.json \
         --root-image /path/to/root_image_dir \
         [--num-samples 2] [--steps 300] [--device cuda] \
-        [--varen-model-path /path/to/VAREN/models]
+        [--varen-model-path /path/to/VAREN/models] \
+        [--render-out orientation_with_vit_render.png] [--no-render]
 
 Exits non-zero if the loss doesn't drop enough or the final 2D alignment
 error is too large.
@@ -94,6 +103,15 @@ def parse_args():
                   help="Require final loss < this fraction of the first-step loss to PASS")
     p.add_argument("--pixel-error-threshold-frac", type=float, default=0.1,
                   help="Require final mean 2D keypoint error < this fraction of IMAGE_SIZE to PASS")
+    p.add_argument("--render", dest="render", action="store_true", default=True,
+                  help="Render predicted mesh + GT/pred keypoints via the same "
+                       "MeshRenderer.visualize_tensorboard the real training loop logs to "
+                       "TensorBoard with (default: on). Needs pyrender/EGL, same as training.")
+    p.add_argument("--no-render", dest="render", action="store_false",
+                  help="Skip rendering (numeric PASS/FAIL only) -- use if pyrender/EGL isn't set up here.")
+    p.add_argument("--render-out", default="orientation_with_vit_render.png",
+                  help="Where to save the rendered grid (image | mesh front | mesh side | "
+                       "pred keypoints | GT keypoints, per sample)")
     return p.parse_args()
 
 
@@ -124,7 +142,7 @@ def main():
     loader = DataLoader(dataset, batch_size=n, shuffle=False)
     batch = recursive_to(next(iter(loader)), args.device)
 
-    model = AniMerPlusPlus(cfg, init_renderer=False)
+    model = AniMerPlusPlus(cfg, init_renderer=args.render)
     model.to(args.device)
     model.train()
 
@@ -160,6 +178,29 @@ def main():
     align_ok = px_err < px_threshold
     print(f"final mean 2D keypoint error: {px_err:.1f}px on a {cfg.MODEL.IMAGE_SIZE}px patch "
          f"(needed < {px_threshold:.1f}px to pass) [{'PASS' if align_ok else 'FAIL'}]")
+
+    if args.render:
+        try:
+            # tensorboard_logging reads output['losses'] unconditionally -- populate it for
+            # this eval-mode forward pass (the training loop above already did this per step,
+            # but that output dict isn't this one). Reuses the exact rendering the real
+            # training run logs to TensorBoard (amr/models/animerpp.py's tensorboard_logging /
+            # MeshRenderer.visualize_tensorboard): per sample, [input image | predicted mesh
+            # (front) | predicted mesh (side) | predicted 2D keypoints | GT 2D keypoints].
+            model.compute_loss(batch, output, train=False)
+            rend_imgs = model.tensorboard_logging(batch, output, step_count=args.steps,
+                                                  train=False, write_to_summary_writer=False)
+            from torchvision.utils import save_image
+            save_image(rend_imgs, args.render_out)
+            print(f"\nSaved render (per sample: image | mesh front | mesh side | pred keypoints "
+                 f"| GT keypoints) to {args.render_out}")
+        except Exception:
+            print("\n[render skipped] rendering raised an exception -- not treated as a hard "
+                 "PASS/FAIL failure, this is a visual bonus on top of the numeric verdict above "
+                 "(common cause: no pyrender/EGL context available in this environment; the real "
+                 "training run uses the same renderer, so this usually just works there). "
+                 "Re-run with --no-render to skip this step. Traceback:", file=sys.stderr)
+            traceback.print_exc()
 
     ok = loss_ok and align_ok
     print()
