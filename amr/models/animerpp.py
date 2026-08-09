@@ -4,7 +4,7 @@ from torchvision.utils import make_grid
 from typing import Dict
 from yacs.config import CfgNode
 from ..utils import MeshRenderer
-from ..utils.geometry import perspective_projection
+from ..utils.geometry import perspective_projection, aa_to_rotmat
 from ..utils.pylogger import get_pylogger
 from .backbones import create_backbone
 from .heads.classifier_head import ClassTokenHead
@@ -248,8 +248,10 @@ class AniMerPlusPlus(pl.LightningModule):
         Returns:
             torch.Tensor: Total loss for current batch and loss components.
         """
+        pred_params = output['pred_params']
         pred_keypoints_2d = output['pred_keypoints_2d']
         pred_keypoints_3d = output['pred_keypoints_3d']
+        batch_size = pred_keypoints_3d.shape[0]
 
         gt_keypoints_2d = batch['keypoints_2d']
         gt_keypoints_3d = batch['keypoints_3d']
@@ -257,13 +259,42 @@ class AniMerPlusPlus(pl.LightningModule):
         loss_keypoints_2d = self.keypoint_2d_loss(pred_keypoints_2d, gt_keypoints_2d)
         loss_keypoints_3d = self.keypoint_3d_loss(pred_keypoints_3d, gt_keypoints_3d, pelvis_id=0)
 
+        # Direct supervision on the pose/shape parameters themselves.
+        # Without this, the only constraint on the mesh is the 43 keypoints --
+        # 0.3% of VAREN's 13873 vertices -- so betas/pose are free to drift to
+        # implausible values that still put those 43 points roughly right, which
+        # is exactly what happened: betas grew to ~6x the ground-truth magnitude
+        # and the mesh came out crumpled/squished (see .agent/Checks.md).
+        # The dataset already ships exact ground-truth parameters for every
+        # (synthetic) sample, so this is direct supervision, not a prior --
+        # mirrors compute_smal_loss in the original AniMer codebase.
+        gt_params = batch['varen_params']
+        has_params = batch['has_varen_params']
+        is_axis_angle = batch['varen_params_is_axis_angle']
+        loss_varen_params = {}
+        for k, pred in pred_params.items():
+            if k not in gt_params:
+                continue
+            gt = gt_params[k].view(batch_size, -1)
+            # ground truth ships as axis-angle; with JOINT_REP '6d' the head
+            # already emits rotation matrices, so lift the ground truth to match
+            # whichever representation the head is actually producing.
+            if is_axis_angle.get(k, torch.zeros(1, dtype=torch.bool)).all() and pred.dim() == 4:
+                gt = aa_to_rotmat(gt.reshape(-1, 3)).view(batch_size, -1, 3, 3)
+            loss_varen_params[k] = self.parameter_loss(pred.reshape(batch_size, -1),
+                                                       gt.reshape(batch_size, -1),
+                                                       has_params[k])
+
         loss_config = self.cfg.LOSS_WEIGHTS.VAREN
         loss = loss_config['KEYPOINTS_3D'] * loss_keypoints_3d + \
-               loss_config['KEYPOINTS_2D'] * loss_keypoints_2d
+               loss_config['KEYPOINTS_2D'] * loss_keypoints_2d + \
+               sum([loss_varen_params[k] * loss_config[k.upper()] for k in loss_varen_params])
 
         losses = dict(loss_varen=loss.detach(),
                       loss_varen_keypoints_2d=loss_keypoints_2d.detach(),
                       loss_varen_keypoints_3d=loss_keypoints_3d.detach())
+        for k, v in loss_varen_params.items():
+            losses['loss_varen_' + k] = v.detach()
         return loss, losses
 
 

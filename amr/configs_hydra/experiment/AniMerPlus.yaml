@@ -38,6 +38,17 @@ LOSS_WEIGHTS:
   VAREN:
     KEYPOINTS_3D: 0.05
     KEYPOINTS_2D: 0.01
+    # direct supervision on the predicted parameters (see compute_varen_loss).
+    # keypoints alone constrain only 43 of 13873 vertices, which let betas blow
+    # up and crumple the mesh. Deliberately ~20-40x the SMAL/AVES weights above:
+    # those assume a shape/pose prior alongside and mostly-unlabelled real images,
+    # whereas every horse sample is synthetic with exact ground-truth parameters,
+    # so this is direct supervision and can be weighted accordingly. Measured: at
+    # the SMAL weights betas stalls ~1.8x above ground truth, at these it converges
+    # onto it (see .agent/Checks.md).
+    GLOBAL_ORIENT: 0.02
+    BODY_POSE: 0.02
+    BETAS: 0.02
   SUPCON: 0.0005
 
 TRAIN:
