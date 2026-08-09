@@ -4,6 +4,8 @@ import open3d as o3d
 from typing import Dict, List, Union
 from pytorch3d.transforms import axis_angle_to_matrix
 
+from amr.models.animerpp import _varen_native_to_dataset_frame
+
 
 def compute_scale_transform(S1: torch.Tensor, S2: torch.Tensor) -> torch.Tensor:
     """
@@ -211,10 +213,19 @@ class Evaluator:
         smal_forward, no axis-angle -> rotation-matrix conversion is needed:
         the VAREN wrapper (amr.models.varen_warapper.VAREN) accepts raw
         axis-angle global_orient/body_pose directly via pose2rot=True.
+
+        Raw VAREN output is in VAREN's native axes, not the dataset's -- apply
+        the same remap forward_one_parametric_model applies to predictions
+        (amr/models/animerpp.py's _varen_native_to_dataset_frame) so gt_vertices
+        here lines up with output['pred_vertices']. compute_pa_mpvpe's Procrustes
+        alignment happens to be invariant to a missing fixed rotation like this
+        one, so leaving it out didn't skew that particular metric, but any other
+        consumer of this function's output (rendering, a future non-PA loss)
+        would silently get vertices in the wrong frame without this.
         """
         device = batch['img'].device
         varen_params = {k: v.to(device) for k, v in batch['varen_params'].items()
                         if k in ('global_orient', 'body_pose', 'betas', 'transl')}
         with torch.no_grad():
             varen_output = self.smal_model(**varen_params, pose2rot=True)
-        return varen_output.vertices
+        return _varen_native_to_dataset_frame(varen_output.vertices)
