@@ -23,6 +23,12 @@
 #                                 must be >=2, BatchNorm needs a real batch)
 #   -s, --steps N                 Training steps (default: 300)
 #   -d, --device cuda|cpu         (default: cuda if available, else cpu)
+#   -o, --render-out PATH         Save the rendered grid here (default:
+#                                 orientation_with_vit_render.png). Same
+#                                 image|mesh|keypoints grid the real training
+#                                 loop logs to TensorBoard.
+#   --no-render                   Skip rendering (numeric PASS/FAIL only) --
+#                                 use if pyrender/EGL isn't set up here.
 #   -h, --help                    Show this help and exit
 #
 # EXIT CODE: 0 if the pipeline converges (loss drop + 2D alignment), non-zero
@@ -37,6 +43,8 @@ VAREN_MODEL_PATH=""
 NUM_SAMPLES=2
 STEPS=300
 DEVICE=""
+RENDER_OUT=""
+NO_RENDER=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -46,18 +54,22 @@ while [[ $# -gt 0 ]]; do
     -n|--num-samples) NUM_SAMPLES="$2"; shift 2 ;;
     -s|--steps) STEPS="$2"; shift 2 ;;
     -d|--device) DEVICE="$2"; shift 2 ;;
+    -o|--render-out) RENDER_OUT="$2"; shift 2 ;;
+    --no-render) NO_RENDER=1; shift ;;
     -h|--help) grep '^#' "$0" | sed 's/^#//; s/^ //'; exit 0 ;;
     *) echo "Unknown option: $1" >&2; exit 1 ;;
   esac
 done
 
 if [[ -z "$JSON_FILE" || -z "$ROOT_IMAGE" ]]; then
-  echo "Usage: $0 -j JSON -r ROOT_IMAGE [-m VAREN_MODEL_PATH] [-n NUM_SAMPLES] [-s STEPS] [-d DEVICE]" >&2
+  echo "Usage: $0 -j JSON -r ROOT_IMAGE [-m VAREN_MODEL_PATH] [-n NUM_SAMPLES] [-s STEPS] [-d DEVICE] [-o RENDER_OUT] [--no-render]" >&2
   exit 1
 fi
 
 ARGS=(--json-file "$JSON_FILE" --root-image "$ROOT_IMAGE" --num-samples "$NUM_SAMPLES" --steps "$STEPS")
 [[ -n "$VAREN_MODEL_PATH" ]] && ARGS+=(--varen-model-path "$VAREN_MODEL_PATH")
 [[ -n "$DEVICE" ]] && ARGS+=(--device "$DEVICE")
+[[ -n "$RENDER_OUT" ]] && ARGS+=(--render-out "$RENDER_OUT")
+[[ "$NO_RENDER" -eq 1 ]] && ARGS+=(--no-render)
 
 python3 scripts/verify_orientation_with_vit.py "${ARGS[@]}"
