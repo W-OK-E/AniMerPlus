@@ -48,8 +48,14 @@ import numpy as np
 import torch
 
 from amr.configs import get_config
-from amr.models.animerpp import _varen_native_to_dataset_frame
+from amr.models.animerpp import _varen_native_to_camera_frame
 from amr.models.varen_warapper import VAREN
+from amr.utils.geometry import perspective_projection
+
+# The dataset's exported frame (+Y up) and the pipeline's camera frame (+Y down,
+# +Z depth) differ by a 180-degree rotation about X -- negating Y and Z converts
+# either way. See .agent/Checks.md (2026-08-10, N1-N4).
+EXPORT_FROM_CAMERA = np.array([1., -1., -1.], dtype=np.float32)
 
 
 def parse_args():
@@ -65,12 +71,53 @@ def parse_args():
     p.add_argument("--error-threshold", type=float, default=0.05,
                   help="Max allowed mean per-point 3D error (model units, same units the "
                        "training loss uses) before a sample is reported FAIL")
+    p.add_argument("--reproj-threshold-px", type=float, default=15.0,
+                  help="Max allowed best-case 2D reprojection error, in px of a 256px crop. "
+                       "Catches coordinate-frame errors that the 3D check is blind to (a "
+                       "frame flip lands around ~104px here); correct geometry sits at ~2-3px, "
+                       "the residual being the dataset's weak-perspective approximation.")
     p.add_argument("--out", default=None,
                   help="Optional: save a visual overlay (real image + our mesh's silhouette) here. "
                        "Best-effort -- skipped with a warning if the real image/camera params "
                        "aren't reachable from --root-image; the numeric check above is the "
                        "authoritative pass/fail signal either way.")
     return p.parse_args()
+
+
+def _best_reprojection_error(kp3d: np.ndarray, kp2d_raw: np.ndarray, bbox, image_size: int) -> float:
+    """Best achievable reprojection error (px) of kp3d onto this sample's own GT
+    2D keypoints, over all camera translations.
+
+    Solves only for the 3-number camera translation -- deliberately nothing else,
+    so the result reflects the *geometry* (and therefore the coordinate frame) and
+    can't be fudged by fitting extra parameters. Reported in pixels of an
+    image_size-square crop of the sample's bbox, matching what training sees.
+    """
+    kp2d = kp2d_raw[:, :2].copy()
+    conf = kp2d_raw[:, 2] > 0 if kp2d_raw.shape[1] > 2 else np.ones(len(kp2d), dtype=bool)
+    if bbox is not None:  # express GT in the same normalized crop coords training uses
+        cx, cy = bbox[0] + bbox[2] / 2.0, bbox[1] + bbox[3] / 2.0
+        size = max(bbox[2], bbox[3])
+        kp2d = (kp2d - np.array([cx, cy])) / size
+    else:
+        kp2d = kp2d / image_size - 0.5
+
+    P = torch.tensor(kp3d, dtype=torch.float64).unsqueeze(0)
+    target = torch.tensor(kp2d, dtype=torch.float64)
+    mask = torch.tensor(conf)
+    focal = torch.tensor([[1000.0, 1000.0]], dtype=torch.float64) / image_size
+    t = torch.zeros(3, dtype=torch.float64, requires_grad=True)
+    with torch.no_grad():
+        t[2] = 6.0
+    opt = torch.optim.Adam([t], lr=0.05)
+    for _ in range(1200):
+        opt.zero_grad()
+        proj = perspective_projection(P, translation=t.unsqueeze(0), focal_length=focal)
+        ((proj[0][mask] - target[mask]) ** 2).sum(-1).mean().backward()
+        opt.step()
+    with torch.no_grad():
+        proj = perspective_projection(P, translation=t.unsqueeze(0), focal_length=focal)
+        return float((proj[0][mask] - target[mask]).norm(dim=-1).mean() * image_size)
 
 
 def try_render_overlay(samples, verts_all, faces, root_image, out_path):
@@ -181,20 +228,22 @@ def main():
         out = varen(global_orient=global_orient, body_pose=body_pose, betas=betas_t,
                     transl=None, pose2rot=True)
 
-        # the exact fix from amr/models/animerpp.py -- if this changes there,
-        # it should change here too, since the whole point is to test what
-        # training actually does.
-        verts_fixed = _varen_native_to_dataset_frame(out.vertices)[0].detach().numpy()
-        kp_fixed = _varen_native_to_dataset_frame(out.surface_keypoints)[0].detach().numpy()
-        verts_for_render.append(verts_fixed)
-
-        kp_gt = np.array(s['keypoint_3d'], dtype=np.float32)
+        verts_fixed = _varen_native_to_camera_frame(out.vertices)[0].detach().numpy()
+        kp_fixed = _varen_native_to_camera_frame(out.surface_keypoints)[0].detach().numpy()
+        verts_for_render.append(verts_fixed * EXPORT_FROM_CAMERA)
+        kp_gt = np.array(s['keypoint_3d'], dtype=np.float32) * EXPORT_FROM_CAMERA
         err = np.linalg.norm((kp_fixed - kp_fixed[0]) - (kp_gt - kp_gt[0]), axis=-1)
         mean_err = float(err.mean())
         status = "PASS" if mean_err < args.error_threshold else "FAIL"
         if status == "FAIL":
             all_pass = False
-        print(f"  sample {i:3d} ({s['img_path']}): mean 3D keypoint error = {mean_err:.4f}  [{status}]")
+        px_err = _best_reprojection_error(kp_fixed, np.array(s['keypoint_2d'], dtype=np.float32),
+                                          s.get('bbox'), cfg.MODEL.IMAGE_SIZE)
+        px_status = "PASS" if px_err < args.reproj_threshold_px else "FAIL"
+        if px_status == "FAIL":
+            all_pass = False
+        print(f"  sample {i:3d} ({s['img_path']}): mean 3D keypoint error = {mean_err:.4f}  [{status}]"
+             f"   |  best 2D reprojection error = {px_err:6.2f}px  [{px_status}]")
 
     if args.out:
         try_render_overlay(samples, verts_for_render, faces, args.root_image, args.out)
@@ -206,7 +255,7 @@ def main():
     else:
         print(f"FAIL -- at least one sample exceeded {args.error_threshold} error. "
              f"The plumbing (VAREN forward + axis remap in animerpp.py) does not match "
-             f"this dataset's ground truth -- check that _varen_native_to_dataset_frame "
+             f"this dataset's ground truth -- check that _varen_native_to_camera_frame "
              f"is actually present and unchanged, and that --varen-model-path points at "
              f"the VAREN copy with the check_inputs/keypoint-ordering fixes.")
     sys.exit(0 if all_pass else 1)

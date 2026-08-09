@@ -1,58 +1,5 @@
 """
 VAREN-shaped dataset loaders for horse data.
-
-These mirror amr/datasets/animal3d_dataset.py's Train3DDataset / EvaluationDataset
-structure, but read the horse export schema produced by the sibling `genzoo`
-project (github.com/.../data-gen/genzoo) instead of the SMAL-shaped Animal3D
-schema. Per-sample JSON schema (see genzoo's export spec, one dict per entry in
-data['data']):
-
-    {
-      "img_path": "...",                       # RGB image, relative to root_image
-      "mask_path": "...",                       # 0/255 grayscale mask, relative to root_image
-      "bbox": [x, y, w, h],
-      "pose": [114 floats],                     # pose[:3] = global_orient (axis-angle)
-                                                  # pose[3:] = VAREN body_pose (37 joints x 3, axis-angle)
-      "shape": [39 floats],                     # VAREN betas directly (no shape/shape_extra split)
-      "trans": [3 floats],                      # camera-relative translation (not consumed by the
-                                                  # forward pass today -- transl is always None in
-                                                  # forward_one_parametric_model -- kept for completeness)
-      "keypoint_2d": [[x, y, visibility], ...], # 43 points
-      "keypoint_3d": [[x, y, z], ...],          # same 43 points, camera-relative 3D
-      "category": int,                          # optional, defaults to HORSE_CATEGORY_ID
-      "supercategory": int                      # optional, defaults to HORSE_SUPERCATEGORY_ID
-    }
-
-The 43 keypoints are VAREN's own pre-named anatomical vertices, in the exact
-order returned by dict-iteration over `varen.vertex_ids.vertex_ids["varen"]`
-(the vendored VAREN package at /home/om/mpi/VAREN). This is also the exact
-order of the `surface_keypoints` output of the VAREN body model forward pass
-(see varen/body_models.py: VAREN.__init__ sets
-`vertex_joint_selector.extra_joints_idxs = list(VERTEX_IDS['varen'].values())`,
-and VAREN.forward() splits the joint_selector output into
-`joints` (skeletal, NUM_JOINTS+1) and `surface_keypoints` (the extra named
-vertices) -- the two ID orderings therefore already match by construction, as
-long as producers of this JSON iterate the same vertex_ids dict).
-AniMerPlusPlus.forward_one_parametric_model (amr/models/animerpp.py) was
-updated to predict against `surface_keypoints` for this exact reason -- do not
-revert that without also updating this file's keypoint contract.
-
-Item dict keys produced by __getitem__ match what
-AniMerPlusPlus.forward_step / compute_varen_loss / tensorboard_logging
-actually read (traced directly from amr/models/animerpp.py):
-    'img', 'mask', 'keypoints_2d' [43,3], 'keypoints_3d' [43,4],
-    'focal_length' [2], 'category', 'supercategory', 'img_border_mask',
-    'has_mask', plus bookkeeping fields ('orig_keypoints_2d', 'box_center',
-    'box_size', 'img_size', '_trans') carried over from the SMAL dataset for
-    parity with the shared amr/datasets/utils.py augmentation pipeline.
-
-A 'varen_params' / 'has_varen_params' dict (global_orient / body_pose / betas
-/ transl, mirroring the SMAL path's 'smal_params') is also included. Nothing
-in the current forward/loss path consumes it -- AniMerPlusPlus.parameter_loss
-is instantiated but never called (see TODO in animerpp.py) -- but it's kept
-around for (a) amr/utils/evaluate_metric.py's Evaluator.varen_forward, which
-uses it to regress GT vertices for the PA-MPVPE metric, and (b) whoever wires
-up direct parameter supervision later.
 """
 import copy
 import os
@@ -73,27 +20,6 @@ from typing import List
 from torch.utils.data import Dataset
 from .utils import get_example, expand_to_aspect_ratio
 
-# Category/supercategory id reserved for VAREN-based horse data. Chosen to
-# avoid collision with every category/supercategory value already produced by
-# the existing dataset loaders:
-#   - ANIMAL3D / CTRLAVES3D (Train3DDataset): 'category' == 'supercategory',
-#     values 0-4 (tiger/dog/horse/cow/hippo, see data/animal3d/train.json's
-#     'supercategories' list) or 6 (CTRLAVES3D, birds).
-#   - CUB (CUBDataset): 'supercategory' == 6 (birds), 'category' == per-species
-#     class id + 6, i.e. roughly 7-206 for CUB-200.
-# 1000 is comfortably clear of all of the above and of any plausible expansion
-# of the CUB-style per-species id range.
-#
-# Note on amr/models/animerpp.py's `supercategory < 5` check (used only to pick
-# which vithmoe backbone MoE expert to route through): since 0-4 are already
-# claimed by ANIMAL3D's five mammal supercategories, there is no unclaimed
-# value that would route VAREN horse data through the "< 5" (mammal-coded)
-# expert without colliding with an existing supercategory id. HORSE_SUPERCATEGORY_ID
-# (1000) therefore falls in the ">= 5" bucket alongside birds. Per prior
-# integration notes this routing is a vestigial, purely-statistical MoE gate
-# left over from the old AVES/SMAL split (not a real species branch anymore),
-# so this is a soft/non-functional mislabel, not a correctness bug -- flagging
-# here in case someone wants to special-case it later.
 HORSE_CATEGORY_ID = 1000
 HORSE_SUPERCATEGORY_ID = 1000
 
@@ -113,8 +39,9 @@ def _load_varen_item(data: dict, root_image: str, focal_length: float,
     supercategory_idx = int(data.get('supercategory', HORSE_SUPERCATEGORY_ID))
 
     keypoint_2d = np.array(data['keypoint_2d'], dtype=np.float32)  # [43, 3] (x, y, vis)
+    keypoint_3d_xyz = np.array(data['keypoint_3d'], dtype=np.float32) * np.array([1., -1., -1.], dtype=np.float32)
     keypoint_3d = np.concatenate(
-        (np.array(data['keypoint_3d'], dtype=np.float32),
+        (keypoint_3d_xyz,
          np.ones((len(data['keypoint_3d']), 1), dtype=np.float32)), axis=-1)  # [43, 4] (x, y, z, conf)
 
     bbox = data['bbox']  # [x, y, w, h]
@@ -147,11 +74,6 @@ def _load_varen_item(data: dict, root_image: str, focal_length: float,
     has_translation = np.array(1., dtype=np.float32)
     ori_keypoint_2d = keypoint_2d.copy()
 
-    # get_example()'s shared augmentation pipeline (amr/datasets/utils.py) does
-    # rot_aa() on 'global_orient' and, if DO_FLIP, a fliplr on 'pose'/'betas'/
-    # 'translation' -- it needs a dict with these SMAL-style key names
-    # regardless of body model, so we use 'pose' (not 'body_pose') for this
-    # intermediate dict and rename back to 'body_pose' below.
     aug_params = {'global_orient': pose[:3],
                  'pose': pose[3:],
                  'betas': betas,

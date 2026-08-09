@@ -16,15 +16,10 @@ from .varen_warapper import VAREN
 log = get_pylogger(__name__)
 
 
-def _varen_native_to_dataset_frame(x: torch.Tensor) -> torch.Tensor:
-    """VAREN's raw output axes (X=nose-to-tail, Y=left-right, Z=up) do not match
-    the axes the genzoo-generated ground truth uses (X=nose-to-tail, Y=up,
-    Z=left-right-negated) -- confirmed by feeding real dataset pose/shape
-    values through this exact VAREN call and comparing to that sample's own
-    exported keypoints (see .agent/Checks.md, "axis mismatch" finding).
-    Without this remap, the keypoint losses compare "up" against "sideways"
-    on two of the three axes for every sample. new_y=old_z, new_z=-old_y."""
-    return torch.stack([x[..., 0], x[..., 2], -x[..., 1]], dim=-1)
+def _varen_native_to_camera_frame(x: torch.Tensor) -> torch.Tensor:
+    """Put VAREN's raw output into the OpenCV camera frame the rest of this
+    pipeline works in: +X right, +Y DOWN, +Z depth away from the camera."""
+    return torch.stack([x[..., 0], -x[..., 2], x[..., 1]], dim=-1)
 
 
 class AniMerPlusPlus(pl.LightningModule):
@@ -46,16 +41,6 @@ class AniMerPlusPlus(pl.LightningModule):
             weights_path = cfg.MODEL.BACKBONE.PRETRAINED_WEIGHTS
             log.info(f'Loading backbone weights from {weights_path}')
             checkpoint = torch.load(weights_path, map_location='cpu', weights_only=False)
-            # Two supported formats:
-            #  - a bare backbone-only state dict (e.g. data/vitmoe.pth) -- flat
-            #    tensor dict, no 'state_dict' wrapper.
-            #  - a full AniMerPlusPlus Lightning checkpoint (e.g. a prior run's
-            #    checkpoint.ckpt) -- weights for every submodule live under
-            #    checkpoint['state_dict'], each key prefixed with its module
-            #    name ('backbone.', 'smal_head.', 'varen_head.', etc., possibly
-            #    from an older head layout than this run's). Only pull out the
-            #    'backbone.' keys -- everything else may not even correspond to
-            #    a submodule that still exists.
             if 'state_dict' in checkpoint:
                 state_dict = {
                     k[len('backbone.'):]: v
@@ -89,10 +74,6 @@ class AniMerPlusPlus(pl.LightningModule):
         self.register_buffer('initialized', torch.tensor(False))
         # Setup renderer for visualization
         if init_renderer:
-            # self.varen.faces (amr/models/varen_warapper.py) is already a plain
-            # numpy array (VAREN.faces = data_struct.f, loaded straight from the
-            # pickled model file), not a torch.Tensor -- .numpy() would raise
-            # AttributeError.
             import numpy as np
             self.varen_mesh_renderer = MeshRenderer(self.cfg, faces=np.asarray(self.varen.faces))
         else:
@@ -166,12 +147,6 @@ class AniMerPlusPlus(pl.LightningModule):
         pred_params['betas'] = pred_params['betas'].reshape(batch_size, -1)
         if 'body_pose' in pred_params:
             betas = pred_params['betas']
-            # VAREN_HEAD.JOINT_REP decides what shape decpose's raw output was
-            # converted to (see varen_head.py): 'aa' -- 3 raw numbers per joint,
-            # fed straight to VAREN with pose2rot=True; '6d' (default) -- already
-            # converted to rotation matrices there, fed with pose2rot=False. Read
-            # from the head itself rather than assuming one or the other, so both
-            # representations work through this same call.
             is_axis_angle = head.joint_rep_type == 'aa'
             if is_axis_angle:
                 global_orient = pred_params['global_orient'].reshape(batch_size, 3)
@@ -185,23 +160,17 @@ class AniMerPlusPlus(pl.LightningModule):
                                                       transl=None,
                                                       pose2rot=is_axis_angle)
             # fix axis mismatch: put VAREN's raw output into the dataset's frame
-            parametric_model_output.vertices = _varen_native_to_dataset_frame(parametric_model_output.vertices)
+            parametric_model_output.vertices = _varen_native_to_camera_frame(parametric_model_output.vertices)
             if getattr(parametric_model_output, 'surface_keypoints', None) is not None:
-                parametric_model_output.surface_keypoints = _varen_native_to_dataset_frame(parametric_model_output.surface_keypoints)
+                parametric_model_output.surface_keypoints = _varen_native_to_camera_frame(parametric_model_output.surface_keypoints)
             if getattr(parametric_model_output, 'joints', None) is not None:
-                parametric_model_output.joints = _varen_native_to_dataset_frame(parametric_model_output.joints)
+                parametric_model_output.joints = _varen_native_to_camera_frame(parametric_model_output.joints)
         else:
             pred_params['global_orient'] = pred_params['global_orient'].reshape(batch_size, -1, 3, 3)
             pred_params['pose'] = pred_params['pose'].reshape(batch_size, -1, 3, 3)
             pred_params['bone'] = pred_params['bone'].reshape(batch_size, -1) if 'bone' in pred_params else None
             parametric_model_output = parametric_model(**pred_params, pose2rot=False)
 
-        # VAREN's forward() returns `.joints` truncated to the NUM_JOINTS+1 skeletal
-        # joints, and `.surface_keypoints` for the extra named anatomical vertices
-        # (varen.vertex_ids.vertex_ids["varen"], 43 points, in dict-iteration order).
-        # The genzoo export schema's keypoint_2d/keypoint_3d ground truth is defined
-        # over those 43 named vertices, so prediction must use surface_keypoints to
-        # stay index-aligned with the ground truth used in compute_varen_loss.
         surface_keypoints = getattr(parametric_model_output, 'surface_keypoints', None)
         pred_keypoints_3d = surface_keypoints if surface_keypoints is not None else parametric_model_output.joints
         pred_vertices = parametric_model_output.vertices
@@ -259,15 +228,6 @@ class AniMerPlusPlus(pl.LightningModule):
         loss_keypoints_2d = self.keypoint_2d_loss(pred_keypoints_2d, gt_keypoints_2d)
         loss_keypoints_3d = self.keypoint_3d_loss(pred_keypoints_3d, gt_keypoints_3d, pelvis_id=0)
 
-        # Direct supervision on the pose/shape parameters themselves.
-        # Without this, the only constraint on the mesh is the 43 keypoints --
-        # 0.3% of VAREN's 13873 vertices -- so betas/pose are free to drift to
-        # implausible values that still put those 43 points roughly right, which
-        # is exactly what happened: betas grew to ~6x the ground-truth magnitude
-        # and the mesh came out crumpled/squished (see .agent/Checks.md).
-        # The dataset already ships exact ground-truth parameters for every
-        # (synthetic) sample, so this is direct supervision, not a prior --
-        # mirrors compute_smal_loss in the original AniMer codebase.
         gt_params = batch['varen_params']
         has_params = batch['has_varen_params']
         is_axis_angle = batch['varen_params_is_axis_angle']
@@ -276,9 +236,6 @@ class AniMerPlusPlus(pl.LightningModule):
             if k not in gt_params:
                 continue
             gt = gt_params[k].view(batch_size, -1)
-            # ground truth ships as axis-angle; with JOINT_REP '6d' the head
-            # already emits rotation matrices, so lift the ground truth to match
-            # whichever representation the head is actually producing.
             if is_axis_angle.get(k, torch.zeros(1, dtype=torch.bool)).all() and pred.dim() == 4:
                 gt = aa_to_rotmat(gt.reshape(-1, 3)).view(batch_size, -1, 3, 3)
             loss_varen_params[k] = self.parameter_loss(pred.reshape(batch_size, -1),
@@ -364,9 +321,6 @@ class AniMerPlusPlus(pl.LightningModule):
         dataset_source = (batch["supercategory"] < 5)[:num_images]  # bird for index 0
 
         if 'varen_output' in output:
-            # .float() before .numpy() -- under mixed-precision training these
-            # are BFloat16, which numpy can't convert directly (confirmed by
-            # hitting this crash on the first real fast_dev_run training step).
             rend_imgs_varen = self.varen_mesh_renderer.visualize_tensorboard(
                                                                             output['varen_output']['pred_vertices'].detach().float().cpu().numpy()[:num_images],
                                                                             output['varen_output']['pred_cam_t'].detach().float().cpu().numpy()[:num_images],
