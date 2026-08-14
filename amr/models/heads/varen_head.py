@@ -43,7 +43,7 @@ class VARENTransformerDecoderHead(nn.Module):
 
         init_pose = torch.zeros(size=(1, npose), dtype=torch.float32)
         init_betas = torch.zeros(size=(1, cfg.VAREN.get('NUM_BETAS', 39)), dtype=torch.float32)
-        init_cam = torch.tensor([[0.9, 0, 0]], dtype=torch.float32)
+        init_cam = torch.tensor([[4.5, 0, 0]], dtype=torch.float32)
         self.register_buffer('init_pose', init_pose)
         self.register_buffer('init_betas', init_betas)
         self.register_buffer('init_cam', init_cam)
