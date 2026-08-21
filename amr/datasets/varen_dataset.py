@@ -39,7 +39,15 @@ def _load_varen_item(data: dict, root_image: str, focal_length: float,
     supercategory_idx = int(data.get('supercategory', HORSE_SUPERCATEGORY_ID))
 
     keypoint_2d = np.array(data['keypoint_2d'], dtype=np.float32)  # [43, 3] (x, y, vis)
-    keypoint_3d_xyz = np.array(data['keypoint_3d'], dtype=np.float32) * np.array([1., -1., -1.], dtype=np.float32)
+    # Exported labels are the render-frame 180-degree-X rotation of VAREN:
+    #   export = (native_x, -native_y, -native_z).
+    # The model converts native VAREN output to camera axes
+    #   camera = (native_x, -native_z, native_y).
+    # Combining both gives camera = (export_x, export_z, -export_y).
+    # This must match _varen_native_to_camera_frame in animerpp.py; otherwise
+    # the 3D keypoint loss compares two different coordinate systems.
+    keypoint_3d_xyz = np.array(data['keypoint_3d'], dtype=np.float32)[..., [0, 2, 1]]
+    keypoint_3d_xyz *= np.array([1., 1., -1.], dtype=np.float32)
     keypoint_3d = np.concatenate(
         (keypoint_3d_xyz,
          np.ones((len(data['keypoint_3d']), 1), dtype=np.float32)), axis=-1)  # [43, 4] (x, y, z, conf)

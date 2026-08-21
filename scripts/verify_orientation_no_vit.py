@@ -52,10 +52,19 @@ from amr.models.animerpp import _varen_native_to_camera_frame
 from amr.models.varen_warapper import VAREN
 from amr.utils.geometry import perspective_projection
 
-# The dataset's exported frame (+Y up) and the pipeline's camera frame (+Y down,
-# +Z depth) differ by a 180-degree rotation about X -- negating Y and Z converts
-# either way. See .agent/Checks.md (2026-08-10, N1-N4).
-EXPORT_FROM_CAMERA = np.array([1., -1., -1.], dtype=np.float32)
+def export_to_camera(points: np.ndarray) -> np.ndarray:
+    """Convert exported [x, y, z] labels to the model camera frame.
+
+    The exporter applies the render-frame flip to native VAREN coordinates;
+    the model then maps native axes to camera axes. The composed mapping is
+    [x, y, z] -> [x, z, -y].
+    """
+    return points[..., [0, 2, 1]] * np.array([1., 1., -1.], dtype=np.float32)
+
+
+def camera_to_export(points: np.ndarray) -> np.ndarray:
+    """Inverse of export_to_camera, for optional render overlays."""
+    return points[..., [0, 2, 1]] * np.array([1., -1., 1.], dtype=np.float32)
 
 
 def parse_args():
@@ -230,8 +239,8 @@ def main():
 
         verts_fixed = _varen_native_to_camera_frame(out.vertices)[0].detach().numpy()
         kp_fixed = _varen_native_to_camera_frame(out.surface_keypoints)[0].detach().numpy()
-        verts_for_render.append(verts_fixed * EXPORT_FROM_CAMERA)
-        kp_gt = np.array(s['keypoint_3d'], dtype=np.float32) * EXPORT_FROM_CAMERA
+        verts_for_render.append(camera_to_export(verts_fixed))
+        kp_gt = export_to_camera(np.array(s['keypoint_3d'], dtype=np.float32))
         err = np.linalg.norm((kp_fixed - kp_fixed[0]) - (kp_gt - kp_gt[0]), axis=-1)
         mean_err = float(err.mean())
         status = "PASS" if mean_err < args.error_threshold else "FAIL"

@@ -387,4 +387,3 @@ class AniMerPlusPlus(pl.LightningModule):
 
     def validation_step(self, batch: Dict, batch_idx: int, dataloader_idx=0) -> Dict:
         pass
-
