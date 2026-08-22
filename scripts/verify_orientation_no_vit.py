@@ -55,16 +55,23 @@ from amr.utils.geometry import perspective_projection
 def export_to_camera(points: np.ndarray) -> np.ndarray:
     """Convert exported [x, y, z] labels to the model camera frame.
 
-    The exporter applies the render-frame flip to native VAREN coordinates;
-    the model then maps native axes to camera axes. The composed mapping is
-    [x, y, z] -> [x, z, -y].
+    The dataset's exported frame (+Y up) and the pipeline's camera frame
+    (+Y down, +Z depth) differ by exactly a 180-degree rotation about X --
+    negating Y and Z converts either way. Re-verified empirically against
+    train_subset_2.json (2026-08-22): this negate-only mapping gives
+    ~0.005-0.006 mean 3D keypoint error against real GT pose/shape pushed
+    through VAREN; the [x,z,-y] permute tried in between ("Crumpling issue
+    fixed again") gives ~0.9-1.7 -- that was a regression, not a fix. This
+    must match _varen_native_to_camera_frame in amr/models/animerpp.py.
     """
-    return points[..., [0, 2, 1]] * np.array([1., 1., -1.], dtype=np.float32)
+    return points * np.array([1., -1., -1.], dtype=np.float32)
 
 
 def camera_to_export(points: np.ndarray) -> np.ndarray:
-    """Inverse of export_to_camera, for optional render overlays."""
-    return points[..., [0, 2, 1]] * np.array([1., -1., 1.], dtype=np.float32)
+    """Inverse of export_to_camera, for optional render overlays. This
+    mapping is its own inverse (negating twice is a no-op on the sign, and
+    there is no axis permutation to undo)."""
+    return points * np.array([1., -1., -1.], dtype=np.float32)
 
 
 def parse_args():
