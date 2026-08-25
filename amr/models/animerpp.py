@@ -137,9 +137,10 @@ class AniMerPlusPlus(pl.LightningModule):
         output['pred_params'] = {k: v.clone() for k, v in pred_params.items()}
 
         # Compute camera translation
+        cam_scale = torch.nn.functional.softplus(pred_cam[:, 0]) + 1e-3  # keep scale positive, avoid div-by-zero/sign-flip
         pred_cam_t = torch.stack([pred_cam[:, 1],
                                   pred_cam[:, 2],
-                                  2 * focal_length[:, 0] / (self.cfg.MODEL.IMAGE_SIZE * pred_cam[:, 0] + 1e-9)], dim=-1)
+                                  2 * focal_length[:, 0] / (self.cfg.MODEL.IMAGE_SIZE * cam_scale)], dim=-1)
         output['pred_cam_t'] = pred_cam_t
         output['focal_length'] = focal_length
 
