@@ -117,6 +117,20 @@ def main(cfg: DictConfig) -> Optional[float]:
     trainer.fit(model, datamodule=datamodule, ckpt_path='last')
     log.info("Fitting done")
 
+    # Predict on the held-out horse test set once training finishes
+    if trainer.is_global_zero and cfg.DATASETS.get('HORSE', None) is not None and cfg.DATASETS.HORSE.WEIGHT > 0:
+        log.info("Evaluating on held-out HORSE test set")
+        # imported here, not at module top: needs open3d/pytorch3d, only used for this eval step
+        from amr.utils.evaluate_metric import Evaluator
+        from amr.configs import get_config as get_yacs_config
+        from eval import eval_one_dataset
+        model.eval()
+        evaluator = Evaluator(smal_model=model.varen, image_size=cfg.MODEL.IMAGE_SIZE,
+                              pelvis_ind=cfg.EXTRA.get("PELVIS_IND", 0), model_type='varen')
+        default_cfg = get_yacs_config(str(root / "amr/configs_hydra/experiment/default_val.yaml"))
+        eval_one_dataset(cfg.DATASETS.HORSE, default_cfg, cfg, model, evaluator=evaluator,
+                         aug_cfg=None, key="HORSE", device=next(model.parameters()).device)
+
 
 if __name__ == "__main__":
     main()

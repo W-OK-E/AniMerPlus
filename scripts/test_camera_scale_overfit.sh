@@ -23,6 +23,8 @@
 #                                data/AniMerPlus/checkpoint.ckpt). Pass "" for
 #                                a fast random-init smoke check instead.
 #   -n, --num-samples N         (default: 10)
+#   --num-holdout-samples N      Samples NOT used for training, for the final
+#                                results/render (default: 10)
 #   -s, --steps N                (default: 800)
 #   --seed N                     torch.manual_seed, for reproducibility (default: unset)
 #   --sample-offset F            fraction-of-bucket sample-selection offset,
@@ -53,6 +55,7 @@ ROOT_IMAGE="/home/om/mpi/animer_train_data/batches"
 VAREN_MODEL_PATH="/home/om/mpi/VAREN/models"
 PRETRAINED_WEIGHTS="data/AniMerPlus/checkpoint.ckpt"
 NUM_SAMPLES=10
+NUM_HOLDOUT_SAMPLES=10
 STEPS=800
 SEED=""
 SAMPLE_OFFSET="0.0"
@@ -68,6 +71,7 @@ while [[ $# -gt 0 ]]; do
     -m|--varen-model-path) VAREN_MODEL_PATH="$2"; shift 2 ;;
     -w|--pretrained-weights) PRETRAINED_WEIGHTS="$2"; shift 2 ;;
     -n|--num-samples) NUM_SAMPLES="$2"; shift 2 ;;
+    --num-holdout-samples) NUM_HOLDOUT_SAMPLES="$2"; shift 2 ;;
     -s|--steps) STEPS="$2"; shift 2 ;;
     --seed) SEED="$2"; shift 2 ;;
     --sample-offset) SAMPLE_OFFSET="$2"; shift 2 ;;
@@ -81,7 +85,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 ARGS=(--json-file "$JSON_FILE" --root-image "$ROOT_IMAGE" --varen-model-path "$VAREN_MODEL_PATH"
-      --pretrained-weights "$PRETRAINED_WEIGHTS" --num-samples "$NUM_SAMPLES" --steps "$STEPS"
+      --pretrained-weights "$PRETRAINED_WEIGHTS" --num-samples "$NUM_SAMPLES"
+      --num-holdout-samples "$NUM_HOLDOUT_SAMPLES" --steps "$STEPS"
       --sample-offset "$SAMPLE_OFFSET")
 [[ -n "$SEED" ]] && ARGS+=(--seed "$SEED")
 [[ -n "$DEVICE" ]] && ARGS+=(--device "$DEVICE")

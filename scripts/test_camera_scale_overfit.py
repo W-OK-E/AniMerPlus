@@ -68,6 +68,9 @@ def parse_args():
                   help="Real pretrained AniMer+ checkpoint (matches run.sh). Pass empty string "
                        "('') for a fast random-init smoke check instead.")
     p.add_argument("--num-samples", type=int, default=10)
+    p.add_argument("--num-holdout-samples", type=int, default=10,
+                  help="Samples NOT used for training, for the final results/render "
+                       "(checks generalization, not just memorization)")
     p.add_argument("--seed", type=int, default=None, help="torch.manual_seed for reproducibility")
     p.add_argument("--sample-offset", type=float, default=0.0,
                   help="Fraction-of-bucket offset for spread sampling (0.0 or 0.5 were used "
@@ -170,7 +173,19 @@ def pick_available_samples(json_file, root_image, num_samples, offset):
     else:
         idxs = [available[int((k + offset) * len(available) / num_samples)] for k in range(num_samples)]
     yaws = [float(np.degrees(all_data[i]['pose'][2])) for i in idxs]
-    return all_data, idxs, yaws
+    return all_data, available, idxs, yaws
+
+
+def pick_holdout_samples(all_data, available, train_idxs, num_samples):
+    """Pick samples from `available` that were NOT used for training, spread
+    across the remaining pool the same way pick_available_samples does."""
+    pool = [i for i in available if i not in set(train_idxs)]
+    if not pool:
+        return [], []
+    n = min(num_samples, len(pool))
+    idxs = [pool[int(k * len(pool) / n)] for k in range(n)]
+    yaws = [float(np.degrees(all_data[i]['pose'][2])) for i in idxs]
+    return idxs, yaws
 
 
 def main():
@@ -185,9 +200,9 @@ def main():
     from amr.models.animerpp import AniMerPlusPlus
     from amr.utils import recursive_to
 
-    all_data, idxs, yaws = pick_available_samples(args.json_file, args.root_image, args.num_samples, args.sample_offset)
-    print("sample indices:", idxs)
-    print("yaw angles (deg):", [round(y, 1) for y in yaws])
+    all_data, available, idxs, yaws = pick_available_samples(args.json_file, args.root_image, args.num_samples, args.sample_offset)
+    print("train sample indices:", idxs)
+    print("train yaw angles (deg):", [round(y, 1) for y in yaws])
 
     dataset = VARENEvaluationDataset(
         root_image=args.root_image,
@@ -226,28 +241,51 @@ def main():
             print(f"step {step:4d}: loss={comps['loss']:.3f} kp2d={comps.get('loss_varen_keypoints_2d', 0):.2f} "
                  f"cam_z_min={cam_z.min():.1f} cam_z_max={cam_z.max():.1f} cam_z_neg_count={neg}")
 
+    # Final results + render run on held-out samples (never seen during the
+    # overfit loop above) -- checks generalization, not just memorization.
+    holdout_idxs, holdout_yaws = pick_holdout_samples(all_data, available, idxs, args.num_holdout_samples)
+    if not holdout_idxs:
+        print("\nNo held-out samples available (dataset too small) -- skipping final eval/render.")
+        return
+    print("\nholdout sample indices:", holdout_idxs)
+    print("holdout yaw angles (deg):", [round(y, 1) for y in holdout_yaws])
+
+    holdout_dataset = VARENEvaluationDataset(
+        root_image=args.root_image,
+        json_file=args.json_file,
+        augm_config=cfg.DATASETS.CONFIG,
+        focal_length=cfg.VAREN.get("FOCAL_LENGTH", 1000),
+        image_size=cfg.MODEL.IMAGE_SIZE,
+        num_joints=cfg.VAREN.get("NUM_JOINTS", 37),
+        num_betas=cfg.VAREN.get("NUM_BETAS", 39),
+    )
+    holdout_dataset.data['data'] = [all_data[i] for i in holdout_idxs]
+    n_holdout = len(holdout_idxs)
+    holdout_loader = DataLoader(holdout_dataset, batch_size=n_holdout, shuffle=False)
+    holdout_batch = recursive_to(next(iter(holdout_loader)), args.device)
+
     model.eval()
     with torch.no_grad():
-        output = model.forward_step(batch, train=False)
+        output = model.forward_step(holdout_batch, train=False)
     pred_2d = output['varen_output']['pred_keypoints_2d']
-    gt_2d = batch['keypoints_2d'][..., :2]
+    gt_2d = holdout_batch['keypoints_2d'][..., :2]
     per_sample_px = ((pred_2d - gt_2d).norm(dim=-1).mean(dim=-1) * cfg.MODEL.IMAGE_SIZE).detach().cpu().numpy()
     final_cam_z = output['varen_output']['pred_cam_t'][:, 2].detach().cpu().numpy()
     print()
-    print(f"=== per-sample final results ({'OLD formula' if args.disable_fix else 'fixed formula'}) ===")
-    for i in range(n_samples):
-        print(f"sample {i}: yaw={yaws[i]:7.1f} deg  final_2d_err={per_sample_px[i]:7.1f}px  final_cam_z={final_cam_z[i]:8.1f}")
+    print(f"=== per-sample HOLDOUT results ({'OLD formula' if args.disable_fix else 'fixed formula'}) ===")
+    for i in range(n_holdout):
+        print(f"sample {i}: yaw={holdout_yaws[i]:7.1f} deg  final_2d_err={per_sample_px[i]:7.1f}px  final_cam_z={final_cam_z[i]:8.1f}")
     n_pass = int((per_sample_px < args.pass_threshold_px).sum())
-    print(f"{n_pass}/{n_samples} samples under {args.pass_threshold_px}px threshold")
+    print(f"{n_pass}/{n_holdout} holdout samples under {args.pass_threshold_px}px threshold")
 
     if args.render:
         try:
-            model.compute_loss(batch, output, train=False)
-            rend_imgs = model.tensorboard_logging(batch, output, step_count=args.steps,
+            model.compute_loss(holdout_batch, output, train=False)
+            rend_imgs = model.tensorboard_logging(holdout_batch, output, step_count=args.steps,
                                                   train=False, write_to_summary_writer=False)
             from torchvision.utils import save_image
             save_image(rend_imgs, args.render_out)
-            print(f"\nSaved render (per sample: image | mesh front | mesh side | pred keypoints "
+            print(f"\nSaved HOLDOUT render (per sample: image | mesh front | mesh side | pred keypoints "
                  f"| GT keypoints) to {args.render_out}")
         except Exception:
             import traceback
