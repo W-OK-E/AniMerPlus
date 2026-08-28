@@ -229,6 +229,17 @@ class AniMerPlusPlus(pl.LightningModule):
         loss_keypoints_2d = self.keypoint_2d_loss(pred_keypoints_2d, gt_keypoints_2d)
         loss_keypoints_3d = self.keypoint_3d_loss(pred_keypoints_3d, gt_keypoints_3d, pelvis_id=0)
 
+        # Explicit scale supervision: generated horses were coming out consistently
+        # smaller than ground truth. Keypoint3DLoss's per-point L1 mixes pose and
+        # size error together, so overall size gets a weak signal -- this isolates
+        # it directly as mean pelvis-relative keypoint distance (pred vs GT).
+        gt_conf = gt_keypoints_3d[:, :, -1]
+        pred_rel = pred_keypoints_3d - pred_keypoints_3d[:, 0:1, :]
+        gt_rel = gt_keypoints_3d[:, :, :-1] - gt_keypoints_3d[:, 0:1, :-1]
+        pred_scale = (pred_rel.norm(dim=-1) * gt_conf).sum(dim=1) / gt_conf.sum(dim=1).clamp(min=1)
+        gt_scale = (gt_rel.norm(dim=-1) * gt_conf).sum(dim=1) / gt_conf.sum(dim=1).clamp(min=1)
+        loss_scale = (pred_scale - gt_scale).abs().sum()
+
         gt_params = batch['varen_params']
         has_params = batch['has_varen_params']
         is_axis_angle = batch['varen_params_is_axis_angle']
@@ -246,11 +257,13 @@ class AniMerPlusPlus(pl.LightningModule):
         loss_config = self.cfg.LOSS_WEIGHTS.VAREN
         loss = loss_config['KEYPOINTS_3D'] * loss_keypoints_3d + \
                loss_config['KEYPOINTS_2D'] * loss_keypoints_2d + \
+               loss_config['SCALE'] * loss_scale + \
                sum([loss_varen_params[k] * loss_config[k.upper()] for k in loss_varen_params])
 
         losses = dict(loss_varen=loss.detach(),
                       loss_varen_keypoints_2d=loss_keypoints_2d.detach(),
-                      loss_varen_keypoints_3d=loss_keypoints_3d.detach())
+                      loss_varen_keypoints_3d=loss_keypoints_3d.detach(),
+                      loss_varen_scale=loss_scale.detach())
         for k, v in loss_varen_params.items():
             losses['loss_varen_' + k] = v.detach()
         return loss, losses

@@ -49,6 +49,7 @@ LOSS_WEIGHTS:
     GLOBAL_ORIENT: 0.02
     BODY_POSE: 0.02
     BETAS: 0.02
+    SCALE: 0.02  # direct pelvis-relative-size loss -- generated horses were consistently too small
   SUPCON: 0.0005
 
 TRAIN:

@@ -271,12 +271,27 @@ def main():
     gt_2d = holdout_batch['keypoints_2d'][..., :2]
     per_sample_px = ((pred_2d - gt_2d).norm(dim=-1).mean(dim=-1) * cfg.MODEL.IMAGE_SIZE).detach().cpu().numpy()
     final_cam_z = output['varen_output']['pred_cam_t'][:, 2].detach().cpu().numpy()
+
+    # Scale check: mean pelvis-relative keypoint distance, pred vs GT (same
+    # quantity the new SCALE loss supervises). Ratio < 1 means predictions are
+    # smaller than ground truth.
+    pred_3d = output['varen_output']['pred_keypoints_3d']
+    gt_3d = holdout_batch['keypoints_3d']
+    gt_conf = gt_3d[:, :, -1]
+    pred_rel = pred_3d - pred_3d[:, 0:1, :]
+    gt_rel = gt_3d[:, :, :-1] - gt_3d[:, 0:1, :-1]
+    pred_scale = ((pred_rel.norm(dim=-1) * gt_conf).sum(dim=1) / gt_conf.sum(dim=1).clamp(min=1)).detach().cpu().numpy()
+    gt_scale = ((gt_rel.norm(dim=-1) * gt_conf).sum(dim=1) / gt_conf.sum(dim=1).clamp(min=1)).detach().cpu().numpy()
+    scale_ratio = pred_scale / gt_scale
+
     print()
     print(f"=== per-sample HOLDOUT results ({'OLD formula' if args.disable_fix else 'fixed formula'}) ===")
     for i in range(n_holdout):
-        print(f"sample {i}: yaw={holdout_yaws[i]:7.1f} deg  final_2d_err={per_sample_px[i]:7.1f}px  final_cam_z={final_cam_z[i]:8.1f}")
+        print(f"sample {i}: yaw={holdout_yaws[i]:7.1f} deg  final_2d_err={per_sample_px[i]:7.1f}px  "
+             f"final_cam_z={final_cam_z[i]:8.1f}  scale_ratio(pred/gt)={scale_ratio[i]:.3f}")
     n_pass = int((per_sample_px < args.pass_threshold_px).sum())
     print(f"{n_pass}/{n_holdout} holdout samples under {args.pass_threshold_px}px threshold")
+    print(f"mean scale_ratio: {scale_ratio.mean():.3f} (1.0 = correct size, <1.0 = predictions too small)")
 
     if args.render:
         try:
