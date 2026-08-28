@@ -52,7 +52,7 @@ LOSS_WEIGHTS:
   SUPCON: 0.0005
 
 TRAIN:
-  LR: 1.25e-6
+  LR: 1e-4  # was 1.25e-6, 80x too low to converge in a practical step budget -- see test_camera_scale_overfit.py
   WEIGHT_DECAY: 1e-4
   BATCH_SIZE: 64
   LOSS_REDUCTION: mean
