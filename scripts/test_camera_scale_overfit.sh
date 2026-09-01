@@ -39,6 +39,9 @@
 #                                (default: camera_scale_overfit_checkpoints)
 #   --checkpoint-every N          Steps between checkpoints (default: same as
 #                                the --log-every the .py script uses, 50). 0 disables.
+#   --resume-from PATH            Resume from a step_NNNNNN.pt checkpoint. --steps
+#                                is the TARGET total, not additional steps. Must
+#                                use the same sample/model config it was saved with.
 #   -h, --help                   Show this help and exit
 #
 # EXAMPLES:
@@ -69,6 +72,7 @@ RENDER_OUT=""
 NO_RENDER=0
 CHECKPOINT_DIR=""
 CHECKPOINT_EVERY=""
+RESUME_FROM=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -87,6 +91,7 @@ while [[ $# -gt 0 ]]; do
     --no-render) NO_RENDER=1; shift ;;
     --checkpoint-dir) CHECKPOINT_DIR="$2"; shift 2 ;;
     --checkpoint-every) CHECKPOINT_EVERY="$2"; shift 2 ;;
+    --resume-from) RESUME_FROM="$2"; shift 2 ;;
     -h|--help) grep '^#' "$0" | sed 's/^#//; s/^ //'; exit 0 ;;
     *) echo "Unknown option: $1" >&2; exit 1 ;;
   esac
@@ -103,5 +108,6 @@ ARGS=(--json-file "$JSON_FILE" --root-image "$ROOT_IMAGE" --varen-model-path "$V
 [[ "$NO_RENDER" -eq 1 ]] && ARGS+=(--no-render)
 [[ -n "$CHECKPOINT_DIR" ]] && ARGS+=(--checkpoint-dir "$CHECKPOINT_DIR")
 [[ -n "$CHECKPOINT_EVERY" ]] && ARGS+=(--checkpoint-every "$CHECKPOINT_EVERY")
+[[ -n "$RESUME_FROM" ]] && ARGS+=(--resume-from "$RESUME_FROM")
 
 micromamba run -n animer2 python3 scripts/test_camera_scale_overfit.py "${ARGS[@]}"

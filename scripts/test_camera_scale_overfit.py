@@ -26,6 +26,10 @@ verify_orientation_with_vit.py, but:
     render snapshot on the training batch at that step (step_NNNNNN.pt +
     step_NNNNNN_render.png) -- so you can watch alignment evolve over the run,
     not just see the final result. Pass --checkpoint-every 0 to disable.
+  - can resume from one of those checkpoints via --resume-from
+    checkpoint_dir/step_NNNNNN.pt -- --steps is the TARGET total, so resuming
+    a step-300 checkpoint with --steps 800 runs 500 more steps, not 800 more.
+    Must use the same sample/model config it was saved with.
 
 The fix itself (amr/models/animerpp.py, forward_one_parametric_model): the
 predicted camera scale used to be used raw as a divisor
@@ -39,6 +43,8 @@ Usage:
     python scripts/test_camera_scale_overfit.py [--num-samples 10] [--steps 800]
         [--lr 1e-4] [--log-every 50] [--device cuda] [--disable-fix]
         [--render-out camera_scale_overfit_render.png] [--no-render]
+        [--checkpoint-dir camera_scale_overfit_checkpoints] [--checkpoint-every 50]
+        [--resume-from PATH]
         [--json-file ...] [--root-image ...] [--varen-model-path ...]
 
 Needs the animer2 micromamba env active (or run via
@@ -89,6 +95,12 @@ def parse_args():
     p.add_argument("--checkpoint-every", type=int, default=None,
                   help="Steps between checkpoints (default: same as --log-every). "
                        "Pass 0 to disable checkpointing.")
+    p.add_argument("--resume-from", default=None,
+                  help="Path to a step_NNNNNN.pt checkpoint to resume training from. "
+                       "--steps is the TARGET total step count, not additional steps -- "
+                       "e.g. resuming a step-300 checkpoint with --steps 800 runs 500 more "
+                       "steps. Must be resumed with the same model/sample config it was "
+                       "saved with (same --num-samples etc.), otherwise shapes won't match.")
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     p.add_argument("--disable-fix", action="store_true",
                   help="Monkeypatch the OLD unconstrained camera-scale formula back in, "
@@ -269,7 +281,18 @@ def main():
     optimizer = torch.optim.Adam(model.get_parameters(), lr=args.lr)
     checkpoint_every = args.log_every if args.checkpoint_every is None else args.checkpoint_every
 
-    for step in range(args.steps):
+    start_step = 0
+    if args.resume_from:
+        ckpt = torch.load(args.resume_from, map_location=args.device)
+        model.load_state_dict(ckpt['model'])
+        optimizer.load_state_dict(ckpt['optimizer'])
+        start_step = ckpt['step'] + 1
+        print(f"resumed from {args.resume_from} at step {ckpt['step']} -> continuing from step {start_step}")
+        if start_step >= args.steps:
+            print(f"start_step ({start_step}) >= --steps ({args.steps}), nothing left to train -- "
+                 "skipping straight to final eval/render.")
+
+    for step in range(start_step, args.steps):
         optimizer.zero_grad()
         output = model.forward_step(batch, train=True)
         loss = model.compute_loss(batch, output, train=True)
