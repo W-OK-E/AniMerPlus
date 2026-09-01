@@ -30,6 +30,13 @@ verify_orientation_with_vit.py, but:
     checkpoint_dir/step_NNNNNN.pt -- --steps is the TARGET total, so resuming
     a step-300 checkpoint with --steps 800 runs 500 more steps, not 800 more.
     Must use the same sample/model config it was saved with.
+  - for each HOLDOUT sample (the final val-set-style check), also saves pred +
+    GT VAREN params as JSON in the exact same flat schema as
+    VAREN/examples/example_params.json (global_orient/pose/betas, axis-angle)
+    to --params-out-dir, so they can be loaded and compared independently in
+    trimesh/blender -- and (if --render) a semi-transparent wireframe overlay
+    PNG per sample, which shows alignment more precisely than the solid-shaded
+    mesh in the main grid render.
 
 The fix itself (amr/models/animerpp.py, forward_one_parametric_model): the
 predicted camera scale used to be used raw as a divisor
@@ -109,6 +116,9 @@ def parse_args():
     p.add_argument("--render", dest="render", action="store_true", default=True)
     p.add_argument("--no-render", dest="render", action="store_false")
     p.add_argument("--render-out", default="camera_scale_overfit_render.png")
+    p.add_argument("--params-out-dir", default="camera_scale_overfit_params",
+                  help="Per-holdout-sample pred/GT VAREN params (VAREN/examples/"
+                       "example_params.json schema) + wireframe overlay PNGs")
     return p.parse_args()
 
 
@@ -197,6 +207,98 @@ def pick_available_samples(json_file, root_image, num_samples, offset):
         idxs = [available[int((k + offset) * len(available) / num_samples)] for k in range(num_samples)]
     yaws = [float(np.degrees(all_data[i]['pose'][2])) for i in idxs]
     return all_data, available, idxs, yaws
+
+
+def denormalize_images(images):
+    """batch['img'] is ImageNet-normalized; undo that for rendering, matching
+    AniMerPlusPlus.tensorboard_logging's own normalization exactly."""
+    std = torch.tensor([0.229, 0.224, 0.225], device=images.device).reshape(1, 3, 1, 1)
+    mean = torch.tensor([0.485, 0.456, 0.406], device=images.device).reshape(1, 3, 1, 1)
+    return images * std + mean
+
+
+def render_wireframe_overlay(vertices, camera_translation, image, focal_length, faces,
+                             alpha=0.45, color=(0.15, 0.9, 0.35)):
+    """Semi-transparent wireframe of the predicted mesh over the real image --
+    edges show alignment more precisely than a solid shaded mesh, and staying
+    transparent keeps the underlying photo visible for comparison."""
+    import pyrender
+    import trimesh
+    from amr.utils.mesh_renderer import create_raymond_lights
+
+    renderer = pyrender.OffscreenRenderer(viewport_width=image.shape[1], viewport_height=image.shape[0])
+    material = pyrender.MetallicRoughnessMaterial(metallicFactor=0.0, alphaMode='OPAQUE',
+                                                  baseColorFactor=(*color, 1.0), wireframe=True)
+    camera_translation = camera_translation.copy()
+    camera_translation[0] *= -1.
+    mesh = trimesh.Trimesh(vertices.copy(), faces.copy())
+    rot = trimesh.transformations.rotation_matrix(np.radians(180), [1, 0, 0])
+    mesh.apply_transform(rot)
+    mesh = pyrender.Mesh.from_trimesh(mesh, material=material)
+
+    scene = pyrender.Scene(bg_color=[0.0, 0.0, 0.0, 0.0], ambient_light=(1.0, 1.0, 1.0))
+    scene.add(mesh, 'mesh')
+    camera_pose = np.eye(4)
+    camera_pose[:3, 3] = camera_translation
+    camera_center = [image.shape[1] / 2., image.shape[0] / 2.]
+    camera = pyrender.IntrinsicsCamera(fx=focal_length, fy=focal_length,
+                                       cx=camera_center[0], cy=camera_center[1], zfar=1000)
+    scene.add(camera, pose=camera_pose)
+    for node in create_raymond_lights():
+        scene.add_node(node)
+
+    color_buf, _ = renderer.render(scene, flags=pyrender.RenderFlags.RGBA | pyrender.RenderFlags.ALL_WIREFRAME)
+    renderer.delete()
+    color_buf = color_buf.astype(np.float32) / 255.0
+    wireframe_mask = (color_buf[:, :, -1] > 0)[:, :, np.newaxis] * alpha
+    output_img = color_buf[:, :, :3] * wireframe_mask + image * (1 - wireframe_mask)
+    return output_img.astype(np.float32)
+
+
+def varen_params_to_json_dict(global_orient, body_pose, betas, is_axis_angle):
+    """Matches VAREN/examples/example_params.json's flat schema exactly:
+    {global_orient: [3], pose: [NUM_JOINTS*3], betas: [NUM_BETAS]}, all axis-angle."""
+    if not is_axis_angle:
+        from pytorch3d.transforms import matrix_to_axis_angle
+        global_orient = matrix_to_axis_angle(global_orient.reshape(-1, 3, 3)).reshape(-1)
+        body_pose = matrix_to_axis_angle(body_pose.reshape(-1, 3, 3)).reshape(-1)
+    else:
+        global_orient = global_orient.reshape(-1)
+        body_pose = body_pose.reshape(-1)
+    return {
+        'global_orient': global_orient.detach().cpu().tolist(),
+        'pose': body_pose.detach().cpu().tolist(),
+        'betas': betas.reshape(-1).detach().cpu().tolist(),
+    }
+
+
+def save_sample_outputs(output, batch, sample_idx, out_dir, prefix, is_axis_angle_pred, faces,
+                        image_np, focal_length, render):
+    """For one sample: pred + GT params as VAREN-example-format JSON, and (if
+    render) a wireframe overlay PNG -- everything needed to inspect this one
+    prediction independently in trimesh/blender, without the rest of the grid."""
+    os.makedirs(out_dir, exist_ok=True)
+    pred_params = output['varen_output']['pred_params']
+    pred_dict = varen_params_to_json_dict(
+        pred_params['global_orient'][sample_idx], pred_params['body_pose'][sample_idx],
+        pred_params['betas'][sample_idx], is_axis_angle_pred)
+    with open(os.path.join(out_dir, f"{prefix}_pred_params.json"), 'w') as f:
+        json.dump(pred_dict, f)
+
+    gt_params = batch['varen_params']
+    gt_dict = varen_params_to_json_dict(
+        gt_params['global_orient'][sample_idx], gt_params['body_pose'][sample_idx],
+        gt_params['betas'][sample_idx], is_axis_angle=True)  # dataset GT is always axis-angle
+    with open(os.path.join(out_dir, f"{prefix}_gt_params.json"), 'w') as f:
+        json.dump(gt_dict, f)
+
+    if render:
+        vertices = output['varen_output']['pred_vertices'][sample_idx].detach().float().cpu().numpy()
+        cam_t = output['varen_output']['pred_cam_t'][sample_idx].detach().float().cpu().numpy()
+        wireframe = render_wireframe_overlay(vertices, cam_t, image_np, focal_length, faces)
+        from PIL import Image
+        Image.fromarray((wireframe.clip(0, 1) * 255).astype(np.uint8)).save(
+            os.path.join(out_dir, f"{prefix}_wireframe.png"))
 
 
 def save_checkpoint(model, optimizer, step, checkpoint_dir, batch, cfg, render):
@@ -373,6 +475,27 @@ def main():
             print("\n[render skipped] rendering raised an exception -- not a hard failure, "
                  "the numeric results above are unaffected. Traceback:", file=sys.stderr)
             traceback.print_exc()
+
+    # Per-sample outputs for independent inspection outside this script: pred +
+    # GT params in the same flat schema as VAREN/examples/example_params.json
+    # (load directly in trimesh/blender), plus a semi-transparent wireframe
+    # overlay per sample (edges read alignment more precisely than solid shading).
+    try:
+        images_np = denormalize_images(holdout_batch['img']).permute(0, 2, 3, 1).detach().cpu().numpy()
+        focal_length = float(cfg.VAREN.get("FOCAL_LENGTH", 1000))
+        is_axis_angle_pred = model.varen_head.joint_rep_type == 'aa'
+        faces = model.varen.faces
+        for i in range(n_holdout):
+            prefix = f"holdout_{i:03d}"
+            save_sample_outputs(output, holdout_batch, i, args.params_out_dir, prefix,
+                               is_axis_angle_pred, faces, images_np[i], focal_length, args.render)
+        print(f"\nSaved per-sample pred/GT params (+ wireframe overlays, if --render) "
+             f"for {n_holdout} holdout samples to {args.params_out_dir}/")
+    except Exception:
+        import traceback
+        print("\n[per-sample outputs skipped] raised an exception -- not a hard failure, "
+             "the results above are unaffected. Traceback:", file=sys.stderr)
+        traceback.print_exc()
 
 
 if __name__ == "__main__":
