@@ -7,8 +7,11 @@
 # docstring for full context and what each field in the output means.
 #
 # Unlike verify_orientation_with_vit.sh, this also applies the backbone-freeze
-# overrides real training uses (run.sh's FREEZE_ATTN/FREEZE_FFN/USE_CLS) --
-# without them the full ViT-MoE backbone is trainable and OOMs on a 12GB card.
+# overrides real training uses (run.sh's FREEZE_ATTN/FREEZE_FFN/FROZEN_STAGES/
+# USE_CLS) -- defaults now match run.sh's partial-unfreeze setup (FREEZE_ATTN/
+# FREEZE_FFN=false, FROZEN_STAGES=27: freezes blocks 1..27, leaves block 0 +
+# blocks 28-31 trainable). Pass --freeze-attn true --freeze-ffn true to go back
+# to the fully-frozen backbone if testing more unfrozen blocks OOMs a 12GB card.
 #
 # Runs in the animer2 micromamba env automatically.
 #
@@ -42,6 +45,11 @@
 #   --resume-from PATH            Resume from a step_NNNNNN.pt checkpoint. --steps
 #                                is the TARGET total, not additional steps. Must
 #                                use the same sample/model config it was saved with.
+#   --freeze-attn true|false      MODEL.BACKBONE.FREEZE_ATTN (default: false)
+#   --freeze-ffn true|false       MODEL.BACKBONE.FREEZE_FFN (default: false)
+#   --frozen-stages N             MODEL.BACKBONE.FROZEN_STAGES (default: 27) --
+#                                only takes effect when --freeze-attn/--freeze-ffn
+#                                are both false
 #   -h, --help                   Show this help and exit
 #
 # EXAMPLES:
@@ -53,6 +61,12 @@
 #
 #   # Same samples/seed as the second ("does it reproduce") confirmation run:
 #   scripts/test_camera_scale_overfit.sh --seed 1234 --sample-offset 0.5
+
+# As per the current configuration, we just need to run:
+# bash scripts/test_camera_scale_overfit.sh --seed 1234 --sample-offset 0.5 --freeze-attn false --freeze-ffn false --frozen-stages 27
+#
+#
+
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR/.."
@@ -73,6 +87,9 @@ NO_RENDER=0
 CHECKPOINT_DIR=""
 CHECKPOINT_EVERY=""
 RESUME_FROM=""
+FREEZE_ATTN=""
+FREEZE_FFN=""
+FROZEN_STAGES=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -92,6 +109,9 @@ while [[ $# -gt 0 ]]; do
     --checkpoint-dir) CHECKPOINT_DIR="$2"; shift 2 ;;
     --checkpoint-every) CHECKPOINT_EVERY="$2"; shift 2 ;;
     --resume-from) RESUME_FROM="$2"; shift 2 ;;
+    --freeze-attn) FREEZE_ATTN="$2"; shift 2 ;;
+    --freeze-ffn) FREEZE_FFN="$2"; shift 2 ;;
+    --frozen-stages) FROZEN_STAGES="$2"; shift 2 ;;
     -h|--help) grep '^#' "$0" | sed 's/^#//; s/^ //'; exit 0 ;;
     *) echo "Unknown option: $1" >&2; exit 1 ;;
   esac
@@ -109,5 +129,8 @@ ARGS=(--json-file "$JSON_FILE" --root-image "$ROOT_IMAGE" --varen-model-path "$V
 [[ -n "$CHECKPOINT_DIR" ]] && ARGS+=(--checkpoint-dir "$CHECKPOINT_DIR")
 [[ -n "$CHECKPOINT_EVERY" ]] && ARGS+=(--checkpoint-every "$CHECKPOINT_EVERY")
 [[ -n "$RESUME_FROM" ]] && ARGS+=(--resume-from "$RESUME_FROM")
+[[ -n "$FREEZE_ATTN" ]] && ARGS+=(--freeze-attn "$FREEZE_ATTN")
+[[ -n "$FREEZE_FFN" ]] && ARGS+=(--freeze-ffn "$FREEZE_FFN")
+[[ -n "$FROZEN_STAGES" ]] && ARGS+=(--frozen-stages "$FROZEN_STAGES")
 
 micromamba run -n animer2 python3 scripts/test_camera_scale_overfit.py "${ARGS[@]}"

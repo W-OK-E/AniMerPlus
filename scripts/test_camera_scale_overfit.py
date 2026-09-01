@@ -5,10 +5,14 @@ Overfit-a-tiny-batch check for the camera-scale fix (2026-08-25 debugging sessio
 Same "can it memorize a handful of real samples" technique as
 verify_orientation_with_vit.py, but:
   - matches real training's backbone-freeze config (run.sh's
-    MODEL.BACKBONE.FREEZE_ATTN/FREEZE_FFN/USE_CLS + the real pretrained
-    checkpoint), which verify_orientation_with_vit.py's own build_cfg() does not
-    apply -- without it the full ViT-MoE backbone is trainable and OOMs on a
-    12GB card.
+    MODEL.BACKBONE.FREEZE_ATTN/FREEZE_FFN/FROZEN_STAGES/USE_CLS + the real
+    pretrained checkpoint), which verify_orientation_with_vit.py's own
+    build_cfg() does not apply. Defaults now match run.sh's partial-unfreeze
+    setup (FREEZE_ATTN/FREEZE_FFN=false, FROZEN_STAGES=27 -- freezes blocks
+    1..27, leaves block 0 + blocks 28-31 trainable); override via
+    --freeze-attn/--freeze-ffn/--frozen-stages, e.g. pass --freeze-attn true
+    --freeze-ffn true to go back to the fully-frozen backbone (needed to avoid
+    OOM on a 12GB card if testing more unfrozen blocks than it can fit).
   - spreads sample selection across the whole dataset (not just the first N),
     and skips samples whose image/mask files aren't present locally.
   - disables cuDNN (this machine's GPU/cuDNN combo raises "GET was unable to
@@ -51,7 +55,7 @@ Usage:
         [--lr 1e-4] [--log-every 50] [--device cuda] [--disable-fix]
         [--render-out camera_scale_overfit_render.png] [--no-render]
         [--checkpoint-dir camera_scale_overfit_checkpoints] [--checkpoint-every 50]
-        [--resume-from PATH]
+        [--resume-from PATH] [--freeze-attn false] [--freeze-ffn false] [--frozen-stages 27]
         [--json-file ...] [--root-image ...] [--varen-model-path ...]
 
 Needs the animer2 micromamba env active (or run via
@@ -85,6 +89,15 @@ def parse_args():
     p.add_argument("--pretrained-weights", default="data/AniMerPlus/checkpoint.ckpt",
                   help="Real pretrained AniMer+ checkpoint (matches run.sh). Pass empty string "
                        "('') for a fast random-init smoke check instead.")
+    p.add_argument("--freeze-attn", type=lambda s: s.lower() == 'true', default=False,
+                  help="MODEL.BACKBONE.FREEZE_ATTN (matches run.sh's default: false)")
+    p.add_argument("--freeze-ffn", type=lambda s: s.lower() == 'true', default=False,
+                  help="MODEL.BACKBONE.FREEZE_FFN (matches run.sh's default: false)")
+    p.add_argument("--frozen-stages", type=int, default=27,
+                  help="MODEL.BACKBONE.FROZEN_STAGES (matches run.sh's default: 27) -- freezes "
+                       "blocks 1..N, leaving block 0 and blocks after N trainable. Only takes "
+                       "effect when --freeze-attn/--freeze-ffn are both false, since those "
+                       "override every block unconditionally when true.")
     p.add_argument("--num-samples", type=int, default=10)
     p.add_argument("--num-holdout-samples", type=int, default=10,
                   help="Samples NOT used for training, for the final results/render "
@@ -122,15 +135,17 @@ def parse_args():
     return p.parse_args()
 
 
-def build_cfg(json_file, root_image, varen_model_path, pretrained_weights):
+def build_cfg(json_file, root_image, varen_model_path, pretrained_weights,
+              freeze_attn=False, freeze_ffn=False, frozen_stages=27):
     from hydra import compose, initialize_config_dir
 
     overrides = [
         "experiment=AniMerPlus",
         "trainer=gpu",
         "launcher=local",
-        "MODEL.BACKBONE.FREEZE_ATTN=true",
-        "MODEL.BACKBONE.FREEZE_FFN=true",
+        f"MODEL.BACKBONE.FREEZE_ATTN={str(freeze_attn).lower()}",
+        f"MODEL.BACKBONE.FREEZE_FFN={str(freeze_ffn).lower()}",
+        f"MODEL.BACKBONE.FROZEN_STAGES={frozen_stages}",
         "MODEL.BACKBONE.USE_CLS=false",
     ]
     if pretrained_weights:
@@ -348,15 +363,16 @@ def main():
         torch.manual_seed(args.seed)
     torch.backends.cudnn.enabled = False
 
-    cfg = build_cfg(args.json_file, args.root_image, args.varen_model_path, args.pretrained_weights)
+    cfg = build_cfg(args.json_file, args.root_image, args.varen_model_path, args.pretrained_weights,
+                    freeze_attn=args.freeze_attn, freeze_ffn=args.freeze_ffn, frozen_stages=args.frozen_stages)
 
     from amr.datasets.varen_dataset import VARENEvaluationDataset
     from amr.models.animerpp import AniMerPlusPlus
     from amr.utils import recursive_to
 
     all_data, available, idxs, yaws = pick_available_samples(args.json_file, args.root_image, args.num_samples, args.sample_offset)
-    print("train sample indices:", idxs)
-    print("train yaw angles (deg):", [round(y, 1) for y in yaws])
+    # print("train sample indices:", idxs)
+    # print("train yaw angles (deg):", [round(y, 1) for y in yaws])
 
     dataset = VARENEvaluationDataset(
         root_image=args.root_image,
