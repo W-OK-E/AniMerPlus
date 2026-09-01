@@ -71,13 +71,13 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR/.."
 
-JSON_FILE="/home/om/mpi/animer_train_data/horse_dataset_textured/train.json"
-ROOT_IMAGE="/home/om/mpi/animer_train_data/batches"
-VAREN_MODEL_PATH="/home/om/mpi/VAREN/models"
+JSON_FILE="/lustre/home/okumar/outputs/horse_dataset_textured/train.json"
+ROOT_IMAGE="/lustre/home/okumar/outputs/batches"
+VAREN_MODEL_PATH="/lustre/home/okumar/VAREN/models"
 PRETRAINED_WEIGHTS="data/AniMerPlus/checkpoint.ckpt"
-NUM_SAMPLES=10
+NUM_SAMPLES=1000
 NUM_HOLDOUT_SAMPLES=10
-STEPS=800
+STEPS=2000
 SEED=""
 SAMPLE_OFFSET="0.0"
 DEVICE=""

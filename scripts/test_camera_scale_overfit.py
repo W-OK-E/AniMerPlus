@@ -385,7 +385,7 @@ def main():
     )
     dataset.data['data'] = [all_data[i] for i in idxs]
     n_samples = len(idxs)
-    loader = DataLoader(dataset, batch_size=n_samples, shuffle=False)
+    loader = DataLoader(dataset, batch_size=32, shuffle=False)
     batch = recursive_to(next(iter(loader)), args.device)
 
     model = AniMerPlusPlus(cfg, init_renderer=args.render)
@@ -445,7 +445,7 @@ def main():
     )
     holdout_dataset.data['data'] = [all_data[i] for i in holdout_idxs]
     n_holdout = len(holdout_idxs)
-    holdout_loader = DataLoader(holdout_dataset, batch_size=n_holdout, shuffle=False)
+    holdout_loader = DataLoader(holdout_dataset, batch_size=32, shuffle=False)
     holdout_batch = recursive_to(next(iter(holdout_loader)), args.device)
 
     model.eval()
