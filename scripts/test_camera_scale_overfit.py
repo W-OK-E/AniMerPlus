@@ -21,6 +21,11 @@ verify_orientation_with_vit.py, but:
     pred 2D keypoints | GT 2D keypoints), reusing the exact same
     AniMerPlusPlus.tensorboard_logging / MeshRenderer.visualize_tensorboard
     call the real training loop logs to TensorBoard with.
+  - saves a checkpoint (model+optimizer state) every --checkpoint-every steps
+    (default: same as --log-every) to --checkpoint-dir, each paired with a
+    render snapshot on the training batch at that step (step_NNNNNN.pt +
+    step_NNNNNN_render.png) -- so you can watch alignment evolve over the run,
+    not just see the final result. Pass --checkpoint-every 0 to disable.
 
 The fix itself (amr/models/animerpp.py, forward_one_parametric_model): the
 predicted camera scale used to be used raw as a divisor
@@ -78,6 +83,12 @@ def parse_args():
     p.add_argument("--steps", type=int, default=800)
     p.add_argument("--lr", type=float, default=1e-4)
     p.add_argument("--log-every", type=int, default=50)
+    p.add_argument("--checkpoint-dir", default="camera_scale_overfit_checkpoints",
+                  help="Folder for periodic model checkpoints + their render snapshots "
+                       "(on the training batch, to watch alignment evolve over the run)")
+    p.add_argument("--checkpoint-every", type=int, default=None,
+                  help="Steps between checkpoints (default: same as --log-every). "
+                       "Pass 0 to disable checkpointing.")
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     p.add_argument("--disable-fix", action="store_true",
                   help="Monkeypatch the OLD unconstrained camera-scale formula back in, "
@@ -176,6 +187,35 @@ def pick_available_samples(json_file, root_image, num_samples, offset):
     return all_data, available, idxs, yaws
 
 
+def save_checkpoint(model, optimizer, step, checkpoint_dir, batch, cfg, render):
+    """Saves model+optimizer state, and (if render) a render snapshot of the
+    current predictions on the training batch, both named by step."""
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    ckpt_path = os.path.join(checkpoint_dir, f"step_{step:06d}.pt")
+    torch.save({'step': step, 'model': model.state_dict(), 'optimizer': optimizer.state_dict()}, ckpt_path)
+
+    if not render:
+        print(f"  [checkpoint] saved {ckpt_path}")
+        return
+
+    model.eval()
+    with torch.no_grad():
+        output = model.forward_step(batch, train=False)
+        model.compute_loss(batch, output, train=False)
+        rend_imgs = model.tensorboard_logging(batch, output, step_count=step,
+                                              train=False, write_to_summary_writer=False)
+    model.train()
+    render_path = os.path.join(checkpoint_dir, f"step_{step:06d}_render.png")
+    try:
+        from torchvision.utils import save_image
+        save_image(rend_imgs, render_path)
+        print(f"  [checkpoint] saved {ckpt_path} + {render_path}")
+    except Exception:
+        import traceback
+        print(f"  [checkpoint] saved {ckpt_path}, but render failed (not fatal):", file=sys.stderr)
+        traceback.print_exc()
+
+
 def pick_holdout_samples(all_data, available, train_idxs, num_samples):
     """Pick samples from `available` that were NOT used for training, spread
     across the remaining pool the same way pick_available_samples does."""
@@ -227,6 +267,7 @@ def main():
         model.forward_one_parametric_model = types.MethodType(old_unconstrained_forward_one_parametric_model, model)
 
     optimizer = torch.optim.Adam(model.get_parameters(), lr=args.lr)
+    checkpoint_every = args.log_every if args.checkpoint_every is None else args.checkpoint_every
 
     for step in range(args.steps):
         optimizer.zero_grad()
@@ -240,6 +281,8 @@ def main():
             neg = int((cam_z < 0).sum())
             print(f"step {step:4d}: loss={comps['loss']:.3f} kp2d={comps.get('loss_varen_keypoints_2d', 0):.2f} "
                  f"cam_z_min={cam_z.min():.1f} cam_z_max={cam_z.max():.1f} cam_z_neg_count={neg}")
+        if checkpoint_every > 0 and (step % checkpoint_every == 0 or step == args.steps - 1):
+            save_checkpoint(model, optimizer, step, args.checkpoint_dir, batch, cfg, args.render)
 
     # Final results + render run on held-out samples (never seen during the
     # overfit loop above) -- checks generalization, not just memorization.

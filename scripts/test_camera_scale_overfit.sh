@@ -35,6 +35,10 @@
 #                                a side-by-side comparison against the fix)
 #   -o, --render-out PATH        (default: camera_scale_overfit_render.png)
 #   --no-render                  Numeric results only, skip the image
+#   --checkpoint-dir PATH        Periodic checkpoints + per-step render snapshots
+#                                (default: camera_scale_overfit_checkpoints)
+#   --checkpoint-every N          Steps between checkpoints (default: same as
+#                                the --log-every the .py script uses, 50). 0 disables.
 #   -h, --help                   Show this help and exit
 #
 # EXAMPLES:
@@ -63,6 +67,8 @@ DEVICE=""
 DISABLE_FIX=0
 RENDER_OUT=""
 NO_RENDER=0
+CHECKPOINT_DIR=""
+CHECKPOINT_EVERY=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -79,6 +85,8 @@ while [[ $# -gt 0 ]]; do
     --disable-fix) DISABLE_FIX=1; shift ;;
     -o|--render-out) RENDER_OUT="$2"; shift 2 ;;
     --no-render) NO_RENDER=1; shift ;;
+    --checkpoint-dir) CHECKPOINT_DIR="$2"; shift 2 ;;
+    --checkpoint-every) CHECKPOINT_EVERY="$2"; shift 2 ;;
     -h|--help) grep '^#' "$0" | sed 's/^#//; s/^ //'; exit 0 ;;
     *) echo "Unknown option: $1" >&2; exit 1 ;;
   esac
@@ -93,5 +101,7 @@ ARGS=(--json-file "$JSON_FILE" --root-image "$ROOT_IMAGE" --varen-model-path "$V
 [[ "$DISABLE_FIX" -eq 1 ]] && ARGS+=(--disable-fix)
 [[ -n "$RENDER_OUT" ]] && ARGS+=(--render-out "$RENDER_OUT")
 [[ "$NO_RENDER" -eq 1 ]] && ARGS+=(--no-render)
+[[ -n "$CHECKPOINT_DIR" ]] && ARGS+=(--checkpoint-dir "$CHECKPOINT_DIR")
+[[ -n "$CHECKPOINT_EVERY" ]] && ARGS+=(--checkpoint-every "$CHECKPOINT_EVERY")
 
 micromamba run -n animer2 python3 scripts/test_camera_scale_overfit.py "${ARGS[@]}"
