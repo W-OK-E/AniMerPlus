@@ -94,8 +94,34 @@ class AniMerPlusPlus(pl.LightningModule):
         Returns:
             Tuple[torch.optim.Optimizer, torch.optim.Optimizer]: Model and discriminator optimizers
         """
-        param_groups = [{'params': filter(lambda p: p.requires_grad, self.get_parameters()), 'lr': self.cfg.TRAIN.LR}]
-        
+        base_lr = self.cfg.TRAIN.LR
+        lr_groups = self.cfg.TRAIN.get('BACKBONE_LR_GROUPS', None)
+
+        if lr_groups and "vit" in self.cfg.MODEL.BACKBONE.TYPE:
+            # discriminative LR across backbone depth -- earlier blocks keep
+            # more of their pretrained features, later blocks adapt faster.
+            # non-block params (patch_embed/pos_embed/cls_token) count as
+            # block 0, same as _freeze_stages' own convention.
+            import re
+            block_re = re.compile(r'blocks\.(\d+)\.')
+            by_mult: Dict[float, list] = {}
+            for name, p in self.backbone.named_parameters():
+                if not p.requires_grad:
+                    continue
+                m = block_re.match(name)
+                block_idx = int(m.group(1)) if m else 0
+                lr_mult = 1.0
+                for group in lr_groups:
+                    if block_idx <= group['max_block']:
+                        lr_mult = group['lr_mult']
+                        break
+                by_mult.setdefault(lr_mult, []).append(p)
+            param_groups = [{'params': params, 'lr': base_lr * lr_mult} for lr_mult, params in by_mult.items()]
+            head_params = list(self.varen_head.parameters()) + list(self.class_token_head.parameters())
+            param_groups.append({'params': filter(lambda p: p.requires_grad, head_params), 'lr': base_lr})
+        else:
+            param_groups = [{'params': filter(lambda p: p.requires_grad, self.get_parameters()), 'lr': base_lr}]
+
         if "vit" in self.cfg.MODEL.BACKBONE.TYPE:
             optimizer = torch.optim.AdamW(params=param_groups,
                                           weight_decay=self.cfg.TRAIN.WEIGHT_DECAY)

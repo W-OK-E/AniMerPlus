@@ -37,7 +37,7 @@ LOSS_WEIGHTS:
     MASK: 0.0
   VAREN:
     KEYPOINTS_3D: 0.05
-    KEYPOINTS_2D: 0.01
+    KEYPOINTS_2D: 0.05  # was 0.01 -- tightened, exact synthetic GT justifies stronger 2D supervision
     # direct supervision on the predicted parameters (see compute_varen_loss).
     # keypoints alone constrain only 43 of 13873 vertices, which let betas blow
     # up and crumple the mesh. Deliberately ~20-40x the SMAL/AVES weights above:
@@ -49,13 +49,20 @@ LOSS_WEIGHTS:
     GLOBAL_ORIENT: 0.02
     BODY_POSE: 0.02
     BETAS: 0.02
-    SCALE: 0.02  # direct pelvis-relative-size loss -- generated horses were consistently too small
+    SCALE: 0.05  # was 0.02 -- tightened, generated horses were consistently too small
   SUPCON: 0.0005
 
 TRAIN:
   LR: 1e-4  # was 1.25e-6, 80x too low to converge in a practical step budget -- see test_camera_scale_overfit.py
   WARMUP_STEPS: 500  # linear warmup steps before cosine decay kicks in (see configure_optimizers)
-  WEIGHT_DECAY: 1e-4
+  WEIGHT_DECAY: 1e-3  # was 1e-4 -- model was overfitting the small horse set, upped regularization
+  # discriminative LR when the backbone isn't frozen (see configure_optimizers): earlier
+  # blocks keep more of their ViTPose++ pretraining, later blocks adapt faster to horses.
+  # block index <= max_block gets lr_mult * TRAIN.LR; anything past the last max_block
+  # (and any non-block param) gets the full TRAIN.LR. Only used when set + backbone unfrozen.
+  BACKBONE_LR_GROUPS:
+    - {max_block: 10, lr_mult: 0.01}
+    - {max_block: 25, lr_mult: 0.1}
   BATCH_SIZE: 64
   LOSS_REDUCTION: mean
   NUM_TRAIN_SAMPLES: 64
@@ -114,8 +121,8 @@ MODEL:
       heads: 8
       mlp_dim: 1024
       dim_head: 64
-      dropout: 0.0
-      emb_dropout: 0.0
+      dropout: 0.1  # was 0.0 -- model was overfitting the small horse set
+      emb_dropout: 0.1  # was 0.0
       norm: layer
       context_dim: 1280
   CLASS_TOKEN_HEAD:

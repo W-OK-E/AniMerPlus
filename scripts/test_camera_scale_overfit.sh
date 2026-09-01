@@ -6,12 +6,14 @@
 # unboundedly as a divisor). See scripts/test_camera_scale_overfit.py's
 # docstring for full context and what each field in the output means.
 #
-# Unlike verify_orientation_with_vit.sh, this also applies the backbone-freeze
+# Unlike verify_orientation_with_vit.sh, this also applies the backbone
 # overrides real training uses (run.sh's FREEZE_ATTN/FREEZE_FFN/FROZEN_STAGES/
-# USE_CLS) -- defaults now match run.sh's partial-unfreeze setup (FREEZE_ATTN/
-# FREEZE_FFN=false, FROZEN_STAGES=27: freezes blocks 1..27, leaves block 0 +
-# blocks 28-31 trainable). Pass --freeze-attn true --freeze-ffn true to go back
-# to the fully-frozen backbone if testing more unfrozen blocks OOMs a 12GB card.
+# USE_CLS) -- defaults now match run.sh's full-unfreeze + discriminative-LR
+# setup (FREEZE_ATTN/FREEZE_FFN=false, FROZEN_STAGES=-1: nothing frozen,
+# TRAIN.BACKBONE_LR_GROUPS in AniMerPlus.yaml governs the effective per-block
+# LR instead -- blocks <=10 at 0.01x, <=25 at 0.1x, 26+ and the heads at the
+# full LR). Pass --freeze-attn true --freeze-ffn true to go back to the
+# fully-frozen backbone if it OOMs a 12GB card.
 #
 # Runs in the animer2 micromamba env automatically.
 #
@@ -47,7 +49,7 @@
 #                                use the same sample/model config it was saved with.
 #   --freeze-attn true|false      MODEL.BACKBONE.FREEZE_ATTN (default: false)
 #   --freeze-ffn true|false       MODEL.BACKBONE.FREEZE_FFN (default: false)
-#   --frozen-stages N             MODEL.BACKBONE.FROZEN_STAGES (default: 27) --
+#   --frozen-stages N             MODEL.BACKBONE.FROZEN_STAGES (default: -1, nothing frozen) --
 #                                only takes effect when --freeze-attn/--freeze-ffn
 #                                are both false
 #   -h, --help                   Show this help and exit
@@ -63,7 +65,7 @@
 #   scripts/test_camera_scale_overfit.sh --seed 1234 --sample-offset 0.5
 
 # As per the current configuration, we just need to run:
-# bash scripts/test_camera_scale_overfit.sh --seed 1234 --sample-offset 0.5 --freeze-attn false --freeze-ffn false --frozen-stages 27
+# bash scripts/test_camera_scale_overfit.sh --seed 1234 --sample-offset 0.5 --freeze-attn false --freeze-ffn false --frozen-stages -1
 #
 #
 
@@ -75,7 +77,7 @@ JSON_FILE="/lustre/home/okumar/outputs/horse_dataset_textured/train.json"
 ROOT_IMAGE="/lustre/home/okumar/outputs/batches"
 VAREN_MODEL_PATH="/lustre/home/okumar/VAREN/models"
 PRETRAINED_WEIGHTS="data/AniMerPlus/checkpoint.ckpt"
-NUM_SAMPLES=1000
+NUM_SAMPLES=3000
 NUM_HOLDOUT_SAMPLES=10
 STEPS=2000
 SEED=""

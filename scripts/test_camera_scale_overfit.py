@@ -4,15 +4,16 @@ Overfit-a-tiny-batch check for the camera-scale fix (2026-08-25 debugging sessio
 
 Same "can it memorize a handful of real samples" technique as
 verify_orientation_with_vit.py, but:
-  - matches real training's backbone-freeze config (run.sh's
+  - matches real training's backbone config (run.sh's
     MODEL.BACKBONE.FREEZE_ATTN/FREEZE_FFN/FROZEN_STAGES/USE_CLS + the real
     pretrained checkpoint), which verify_orientation_with_vit.py's own
-    build_cfg() does not apply. Defaults now match run.sh's partial-unfreeze
-    setup (FREEZE_ATTN/FREEZE_FFN=false, FROZEN_STAGES=27 -- freezes blocks
-    1..27, leaves block 0 + blocks 28-31 trainable); override via
-    --freeze-attn/--freeze-ffn/--frozen-stages, e.g. pass --freeze-attn true
-    --freeze-ffn true to go back to the fully-frozen backbone (needed to avoid
-    OOM on a 12GB card if testing more unfrozen blocks than it can fit).
+    build_cfg() does not apply. Defaults now match run.sh's full-unfreeze +
+    discriminative-LR setup (FREEZE_ATTN/FREEZE_FFN=false, FROZEN_STAGES=-1 --
+    nothing frozen; TRAIN.BACKBONE_LR_GROUPS in AniMerPlus.yaml governs the
+    effective per-block LR instead -- blocks <=10 at 0.01x, <=25 at 0.1x, 26+
+    and the heads at the full LR); override via --freeze-attn/--freeze-ffn/
+    --frozen-stages, e.g. pass --freeze-attn true --freeze-ffn true to go back
+    to the fully-frozen backbone if it OOMs a 12GB card.
   - spreads sample selection across the whole dataset (not just the first N),
     and skips samples whose image/mask files aren't present locally.
   - disables cuDNN (this machine's GPU/cuDNN combo raises "GET was unable to
@@ -55,7 +56,7 @@ Usage:
         [--lr 1e-4] [--log-every 50] [--device cuda] [--disable-fix]
         [--render-out camera_scale_overfit_render.png] [--no-render]
         [--checkpoint-dir camera_scale_overfit_checkpoints] [--checkpoint-every 50]
-        [--resume-from PATH] [--freeze-attn false] [--freeze-ffn false] [--frozen-stages 27]
+        [--resume-from PATH] [--freeze-attn false] [--freeze-ffn false] [--frozen-stages -1]
         [--json-file ...] [--root-image ...] [--varen-model-path ...]
 
 Needs the animer2 micromamba env active (or run via
@@ -93,11 +94,13 @@ def parse_args():
                   help="MODEL.BACKBONE.FREEZE_ATTN (matches run.sh's default: false)")
     p.add_argument("--freeze-ffn", type=lambda s: s.lower() == 'true', default=False,
                   help="MODEL.BACKBONE.FREEZE_FFN (matches run.sh's default: false)")
-    p.add_argument("--frozen-stages", type=int, default=27,
-                  help="MODEL.BACKBONE.FROZEN_STAGES (matches run.sh's default: 27) -- freezes "
-                       "blocks 1..N, leaving block 0 and blocks after N trainable. Only takes "
-                       "effect when --freeze-attn/--freeze-ffn are both false, since those "
-                       "override every block unconditionally when true.")
+    p.add_argument("--frozen-stages", type=int, default=-1,
+                  help="MODEL.BACKBONE.FROZEN_STAGES (matches run.sh's default: -1, i.e. nothing "
+                       "frozen -- TRAIN.BACKBONE_LR_GROUPS in AniMerPlus.yaml governs the "
+                       "effective per-block LR instead). Pass e.g. 27 to freeze blocks 1..27, "
+                       "leaving block 0 and blocks after N trainable. Only takes effect when "
+                       "--freeze-attn/--freeze-ffn are both false, since those override every "
+                       "block unconditionally when true.")
     p.add_argument("--num-samples", type=int, default=10)
     p.add_argument("--num-holdout-samples", type=int, default=10,
                   help="Samples NOT used for training, for the final results/render "
@@ -136,7 +139,7 @@ def parse_args():
 
 
 def build_cfg(json_file, root_image, varen_model_path, pretrained_weights,
-              freeze_attn=False, freeze_ffn=False, frozen_stages=27):
+              freeze_attn=False, freeze_ffn=False, frozen_stages=-1):
     from hydra import compose, initialize_config_dir
 
     overrides = [
