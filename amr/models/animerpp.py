@@ -102,8 +102,16 @@ class AniMerPlusPlus(pl.LightningModule):
         else:
             optimizer = torch.optim.Adam(params=param_groups,
                                          weight_decay=self.cfg.TRAIN.WEIGHT_DECAY)
-        return optimizer
-    
+
+        # short linear warmup -> cosine decay over the full run (manual optimization,
+        # so training_step steps this itself -- Lightning won't auto-step it)
+        warmup_steps = self.cfg.TRAIN.get('WARMUP_STEPS', 500)
+        total_steps = self.cfg.GENERAL.TOTAL_STEPS
+        warmup = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=1e-3, total_iters=warmup_steps)
+        cosine = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max(total_steps - warmup_steps, 1))
+        scheduler = torch.optim.lr_scheduler.SequentialLR(optimizer, schedulers=[warmup, cosine], milestones=[warmup_steps])
+        return [optimizer], [scheduler]
+
     def forward_backbone(self, batch: Dict):
         x = batch['img']
         dataset_source = (batch.get("supercategory", None) < 5) if batch.get("supercategory", None) is not None else None
@@ -391,6 +399,7 @@ class AniMerPlusPlus(pl.LightningModule):
             self.log('train/grad_norm', gn, on_step=True, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
         
         optimizer.step()
+        self.lr_schedulers().step()
         if self.global_step > 0 and self.global_step % self.cfg.GENERAL.LOG_STEPS == 0:
             self.tensorboard_logging(batch, output, self.global_step, train=True)
 
