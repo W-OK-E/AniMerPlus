@@ -50,6 +50,14 @@ LOSS_WEIGHTS:
     BODY_POSE: 0.02
     BETAS: 0.02
     SCALE: 0.05  # was 0.02 -- tightened, generated horses were consistently too small
+    # explicit camera supervision (pred_cam_t vs the GT translation the synthetic
+    # renderer actually used, batch['varen_params']['transl'] -- see compute_varen_loss).
+    # Kept an order of magnitude below the other direct-supervision weights: tz is
+    # O(10-17) vs O(1) for rotmats/betas, so an equal weight would let this term's
+    # squared error dominate the loss. Untested at scale -- 2D reprojection already
+    # constrains the camera indirectly, so this may add little; watch loss_varen_transl
+    # and cam_z_min/max via test_camera_scale_overfit.sh before trusting it in a full run.
+    TRANSL: 0.002
   SUPCON: 0.0005
 
 TRAIN:
@@ -63,7 +71,7 @@ TRAIN:
   BACKBONE_LR_GROUPS:
     - {max_block: 10, lr_mult: 0.01}
     - {max_block: 25, lr_mult: 0.1}
-  BATCH_SIZE: 64
+  BATCH_SIZE: 4
   LOSS_REDUCTION: mean
   NUM_TRAIN_SAMPLES: 64
   NUM_TEST_SAMPLES: 2
@@ -122,7 +130,10 @@ MODEL:
       mlp_dim: 1024
       dim_head: 64
       dropout: 0.1  # was 0.0 -- model was overfitting the small horse set
-      emb_dropout: 0.1  # was 0.0
+      emb_dropout: 0.0  # NOT raised: this head uses num_tokens=1, and TransformerDecoder's
+      # default emb_dropout_type='drop' drops whole TOKENS (DropTokenDropout), not values --
+      # with a single token, any emb_dropout>0 has a per-step chance of dropping it entirely,
+      # producing a zero-length sequence that crashes in decpose() a few steps in.
       norm: layer
       context_dim: 1280
   CLASS_TOKEN_HEAD:

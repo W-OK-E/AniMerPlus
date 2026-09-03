@@ -277,8 +277,16 @@ class AniMerPlusPlus(pl.LightningModule):
         gt_params = batch['varen_params']
         has_params = batch['has_varen_params']
         is_axis_angle = batch['varen_params_is_axis_angle']
+        # Explicit camera supervision: batch['varen_params']['transl'] is the exact
+        # GT camera translation from the synthetic renderer (see varen_dataset.py /
+        # export_dataset.py) -- it was already loaded into every batch but never
+        # compared against pred_cam_t. Folded into the same per-param loop as
+        # global_orient/body_pose/betas below (transl is a plain (B,3) tensor, so
+        # the rotmat-conversion branch is a no-op for it, same as betas).
+        pred_params_and_cam = dict(pred_params)
+        pred_params_and_cam['transl'] = output['pred_cam_t']
         loss_varen_params = {}
-        for k, pred in pred_params.items():
+        for k, pred in pred_params_and_cam.items():
             if k not in gt_params:
                 continue
             gt = gt_params[k].view(batch_size, -1)

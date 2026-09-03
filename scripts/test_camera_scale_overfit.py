@@ -319,12 +319,13 @@ def save_sample_outputs(output, batch, sample_idx, out_dir, prefix, is_axis_angl
             os.path.join(out_dir, f"{prefix}_wireframe.png"))
 
 
-def save_checkpoint(model, optimizer, step, checkpoint_dir, batch, cfg, render):
-    """Saves model+optimizer state, and (if render) a render snapshot of the
-    current predictions on the training batch, both named by step."""
+def save_checkpoint(model, optimizer, step, checkpoint_dir, batch, cfg, render, scheduler=None):
+    """Saves model+optimizer(+scheduler) state, and (if render) a render
+    snapshot of the current predictions on the training batch, both named by step."""
     os.makedirs(checkpoint_dir, exist_ok=True)
     ckpt_path = os.path.join(checkpoint_dir, f"step_{step:06d}.pt")
-    torch.save({'step': step, 'model': model.state_dict(), 'optimizer': optimizer.state_dict()}, ckpt_path)
+    torch.save({'step': step, 'model': model.state_dict(), 'optimizer': optimizer.state_dict(),
+               'scheduler': scheduler.state_dict() if scheduler is not None else None}, ckpt_path)
 
     if not render:
         print(f"  [checkpoint] saved {ckpt_path}")
@@ -368,6 +369,7 @@ def main():
 
     cfg = build_cfg(args.json_file, args.root_image, args.varen_model_path, args.pretrained_weights,
                     freeze_attn=args.freeze_attn, freeze_ffn=args.freeze_ffn, frozen_stages=args.frozen_stages)
+    cfg.TRAIN.LR = args.lr  # so --lr still works now that the optimizer comes from configure_optimizers()
 
     from amr.datasets.varen_dataset import VARENEvaluationDataset
     from amr.models.animerpp import AniMerPlusPlus
@@ -399,7 +401,18 @@ def main():
         print("*** --disable-fix: using the OLD unconstrained camera-scale formula ***")
         model.forward_one_parametric_model = types.MethodType(old_unconstrained_forward_one_parametric_model, model)
 
-    optimizer = torch.optim.Adam(model.get_parameters(), lr=args.lr)
+    # Use the model's own configure_optimizers() -- NOT a bespoke plain-Adam
+    # loop -- so this matches real training's optimizer exactly: AdamW +
+    # TRAIN.WEIGHT_DECAY, TRAIN.BACKBONE_LR_GROUPS discriminative per-block LR
+    # (if set), and the warmup->cosine LR schedule. A flat single-LR Adam here
+    # silently diverged from what run.sh actually trains with.
+    optimizers, schedulers = model.configure_optimizers()
+    optimizer = optimizers[0]
+    # DEBUG: print optimizer param groups
+    print(f"[DEBUG] optimizer param_groups: {len(optimizer.param_groups)} groups")
+    for i, g in enumerate(optimizer.param_groups):
+        print(f"  group {i}: lr={g['lr']:.2e}, weight_decay={g.get('weight_decay', 0)}, params={len(g['params'])}")
+    scheduler = schedulers[0] if schedulers else None
     checkpoint_every = args.log_every if args.checkpoint_every is None else args.checkpoint_every
 
     start_step = 0
@@ -407,6 +420,8 @@ def main():
         ckpt = torch.load(args.resume_from, map_location=args.device)
         model.load_state_dict(ckpt['model'])
         optimizer.load_state_dict(ckpt['optimizer'])
+        if scheduler is not None and ckpt.get('scheduler') is not None:
+            scheduler.load_state_dict(ckpt['scheduler'])
         start_step = ckpt['step'] + 1
         print(f"resumed from {args.resume_from} at step {ckpt['step']} -> continuing from step {start_step}")
         if start_step >= args.steps:
@@ -419,6 +434,8 @@ def main():
         loss = model.compute_loss(batch, output, train=True)
         loss.backward()
         optimizer.step()
+        if scheduler is not None:
+            scheduler.step()
         if step % args.log_every == 0 or step == args.steps - 1:
             comps = {k: round(v.item(), 3) for k, v in output['losses'].items()}
             cam_z = output['varen_output']['pred_cam_t'][:, 2].detach().cpu().numpy()
@@ -426,7 +443,7 @@ def main():
             print(f"step {step:4d}: loss={comps['loss']:.3f} kp2d={comps.get('loss_varen_keypoints_2d', 0):.2f} "
                  f"cam_z_min={cam_z.min():.1f} cam_z_max={cam_z.max():.1f} cam_z_neg_count={neg}")
         if checkpoint_every > 0 and (step % checkpoint_every == 0 or step == args.steps - 1):
-            save_checkpoint(model, optimizer, step, args.checkpoint_dir, batch, cfg, args.render)
+            save_checkpoint(model, optimizer, step, args.checkpoint_dir, batch, cfg, args.render, scheduler=scheduler)
 
     # Final results + render run on held-out samples (never seen during the
     # overfit loop above) -- checks generalization, not just memorization.

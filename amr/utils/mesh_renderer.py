@@ -18,6 +18,23 @@ from pytorch3d.structures import Meshes
 from pytorch3d.renderer import PerspectiveCameras, FoVPerspectiveCameras
 
 
+def _label_panel(img_hwc: np.ndarray, text: str) -> np.ndarray:
+    """Burns a small caption strip into the top-left of an HWC image (float
+    0-1 or uint8, 1 or 3 channels) so a grid of stacked render panels is
+    self-explanatory without a separate legend. Returns the same dtype/range/
+    channel count it was given."""
+    is_float = img_hwc.dtype != np.uint8
+    n_ch = img_hwc.shape[-1]
+    img_u8 = np.ascontiguousarray((np.clip(img_hwc, 0, 1) * 255).astype(np.uint8) if is_float
+                                  else img_hwc.copy())
+    draw_target = np.repeat(img_u8, 3, axis=-1) if n_ch == 1 else img_u8
+    (tw, th), baseline = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.42, 1)
+    cv2.rectangle(draw_target, (0, 0), (tw + 6, th + baseline + 6), (0, 0, 0), -1)
+    cv2.putText(draw_target, text, (3, th + 3), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (255, 255, 255), 1, cv2.LINE_AA)
+    img_u8 = draw_target[:, :, :1] if n_ch == 1 else draw_target
+    return (img_u8.astype(np.float32) / 255.0) if is_float else img_u8
+
+
 def create_raymond_lights():
     import pyrender
     thetas = np.pi * np.array([1.0 / 6.0, 1.0 / 6.0, 1.0 / 6.0])
@@ -208,24 +225,33 @@ class MeshRenderer:
         # (6, 10), (7, 11), (8, 14), (9, 2), (10, 1), (11, 0), (12, 3), (13, 4), (14, 5)]
         # rend_img_pytorch3d = self.render_by_pytorch3d(vertices, camera_translation,
         #                                               images_np, focal_length=self.focal_length)
+        # Grid layout: make_grid(rend_imgs, nrow=5) below means every 5 (or 7,
+        # with masks) consecutive panels are one sample -- each panel gets a
+        # caption burned in so the row/column meaning doesn't need a separate
+        # legend (see .agent/Checks.md, "label everything" follow-up).
         for i in range(vertices.shape[0]):
-            rend_img = torch.from_numpy(np.transpose(
-                self.__call__(vertices[i], camera_translation[i], images_np[i], focal_length=focal_length, side_view=False),
-                (2, 0, 1))).float()
-            rend_img_side = torch.from_numpy(np.transpose(
-                self.__call__(vertices[i], camera_translation[i], images_np[i], focal_length=focal_length, side_view=True),
-                (2, 0, 1))).float()
+            rend_img = _label_panel(self.__call__(vertices[i], camera_translation[i], images_np[i],
+                                                  focal_length=focal_length, side_view=False), "pred mesh (front)")
+            rend_img = torch.from_numpy(np.transpose(rend_img, (2, 0, 1))).float()
+            rend_img_side = _label_panel(self.__call__(vertices[i], camera_translation[i], images_np[i],
+                                                       focal_length=focal_length, side_view=True), "pred mesh (side)")
+            rend_img_side = torch.from_numpy(np.transpose(rend_img_side, (2, 0, 1))).float()
             keypoints = pred_keypoints[i]
             pred_keypoints_img = render_keypoint(255 * images_np[i].copy(), keypoints) / 255
             keypoints = gt_keypoints[i]
             gt_keypoints_img = render_keypoint(255 * images_np[i].copy(), keypoints) / 255
-            rend_imgs.append(torch.from_numpy(images[i]))
+            input_img = np.transpose(_label_panel(images_np[i], "input"), (2, 0, 1))
+            rend_imgs.append(torch.from_numpy(input_img))
             rend_imgs.append(rend_img)
             rend_imgs.append(rend_img_side)
             if pred_masks is not None:
-                rend_imgs.append(torch.from_numpy(pred_masks[i]))
+                rend_imgs.append(torch.from_numpy(
+                    np.transpose(_label_panel(np.transpose(pred_masks[i], (1, 2, 0)), "pred mask"), (2, 0, 1))))
             if gt_masks is not None:
-                rend_imgs.append(torch.from_numpy(gt_masks[i]))
+                rend_imgs.append(torch.from_numpy(
+                    np.transpose(_label_panel(np.transpose(gt_masks[i], (1, 2, 0)), "gt mask"), (2, 0, 1))))
+            pred_keypoints_img = _label_panel(pred_keypoints_img, "pred 2D keypoints")
+            gt_keypoints_img = _label_panel(gt_keypoints_img, "gt 2D keypoints")
             rend_imgs.append(torch.from_numpy(pred_keypoints_img).permute(2, 0, 1))
             rend_imgs.append(torch.from_numpy(gt_keypoints_img).permute(2, 0, 1))
         return rend_imgs
