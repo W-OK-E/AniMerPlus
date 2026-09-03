@@ -390,7 +390,7 @@ def main():
     )
     dataset.data['data'] = [all_data[i] for i in idxs]
     n_samples = len(idxs)
-    loader = DataLoader(dataset, batch_size=32, shuffle=False)
+    loader = DataLoader(dataset, batch_size=2, shuffle=False)
     batch = recursive_to(next(iter(loader)), args.device)
 
     model = AniMerPlusPlus(cfg, init_renderer=args.render)

@@ -266,12 +266,24 @@ class MeshRenderer:
             alphaMode='OPAQUE',
             baseColorFactor=baseColorFactor)
 
+        # Copy, don't mutate: callers (e.g. visualize_tensorboard) reuse the
+        # same camera_translation[i] array across a front-view + side-view
+        # call pair -- mutating it in place here corrupted the second call's
+        # camera position, which is why side-view renders came out black.
+        camera_translation = camera_translation.copy()
         camera_translation[0] *= -1.
 
         mesh = trimesh.Trimesh(vertices.copy(), self.faces.copy())
         if side_view:
+            # Rotate about the mesh's OWN centroid, not the world origin: the
+            # raw vertices aren't origin-centered (camera_translation places
+            # the camera to compensate for that specific, un-rotated pose),
+            # so rotating about (0,0,0) also swings the centroid to a new
+            # world position -- at this camera's narrow FOV (long focal
+            # length over a small patch) that was enough to push the mesh
+            # out of frame entirely, rendering fully black.
             rot = trimesh.transformations.rotation_matrix(
-                np.radians(rot_angle), [0, 1, 0])
+                np.radians(rot_angle), [0, 1, 0], point=mesh.vertices.mean(axis=0))
             mesh.apply_transform(rot)
         rot = trimesh.transformations.rotation_matrix(
             np.radians(180), [1, 0, 0])
