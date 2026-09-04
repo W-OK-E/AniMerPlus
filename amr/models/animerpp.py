@@ -14,6 +14,9 @@ from .varen_warapper import VAREN
 
 
 log = get_pylogger(__name__)
+#Camera scale bounds for when using weak perspective projection.
+CAM_SCALE_MIN = 0.02
+CAM_SCALE_MAX = 3.0
 
 
 def _varen_native_to_camera_frame(x: torch.Tensor) -> torch.Tensor:
@@ -170,7 +173,7 @@ class AniMerPlusPlus(pl.LightningModule):
         output['pred_cam'] = pred_cam
         output['pred_params'] = {k: v.clone() for k, v in pred_params.items()}
 
-        # Compute camera translation
+        # When doing weak projection - need to constrain both lower and upper limits for camera.
         cam_scale = torch.nn.functional.softplus(pred_cam[:, 0]) + 1e-3  # keep scale positive, avoid div-by-zero/sign-flip
         pred_cam_t = torch.stack([pred_cam[:, 1],
                                   pred_cam[:, 2],
@@ -213,9 +216,12 @@ class AniMerPlusPlus(pl.LightningModule):
         output['pred_vertices'] = pred_vertices.reshape(batch_size, -1, 3)
         pred_cam_t = pred_cam_t.reshape(-1, 3)
         focal_length = focal_length.reshape(-1, 2)
-        pred_keypoints_2d = perspective_projection(pred_keypoints_3d,
-                                                   translation=pred_cam_t,
-                                                   focal_length=focal_length / self.cfg.MODEL.IMAGE_SIZE)
+        # Perspective Projection
+        pred_keypoints_2d = perspective_projection(pred_keypoints_3d, 
+                                                 translation = pred_cam_t,
+                                                    focal_length = focal_length / self.cfg.MODEL.IMAGE_SIZE)
+        # Weak Perspective Projection
+        # pred_keypoints_2d = cam_scale.view(-1, 1, 1) * pred_keypoints_3d[..., :2] + pred_cam[:, 1:3].unsqueeze(1)
         output['pred_keypoints_2d'] = pred_keypoints_2d.reshape(batch_size, -1, 2)
         return output
 
@@ -380,9 +386,11 @@ class AniMerPlusPlus(pl.LightningModule):
             rend_imgs_varen = self.varen_mesh_renderer.visualize_tensorboard(
                                                                             output['varen_output']['pred_vertices'].detach().float().cpu().numpy()[:num_images],
                                                                             output['varen_output']['pred_cam_t'].detach().float().cpu().numpy()[:num_images],
+                                                                            # batch["varen_params"]['transl'].detach().float().cpu().numpy()[:num_images],
                                                                             images[:num_images].float().cpu().numpy(),
                                                                             self.cfg.VAREN.get("FOCAL_LENGTH", 1000),
                                                                             output['varen_output']['pred_keypoints_2d'].detach().float().cpu().numpy()[:num_images],
+                                                                            # batch['keypoints_2d'].float().cpu().numpy()[:num_images][:,:,:2],
                                                                             gt_keypoints_2d[:num_images].float().cpu().numpy(),
                                                                             )
             rend_imgs.extend(rend_imgs_varen)

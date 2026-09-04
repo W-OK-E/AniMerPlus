@@ -18,6 +18,23 @@ from pytorch3d.structures import Meshes
 from pytorch3d.renderer import PerspectiveCameras, FoVPerspectiveCameras
 
 
+def _label_panel(img_hwc: np.ndarray, text: str) -> np.ndarray:
+    """Burns a small caption strip into the top-left of an HWC image (float
+    0-1 or uint8, 1 or 3 channels) so a grid of stacked render panels is
+    self-explanatory without a separate legend. Returns the same dtype/range/
+    channel count it was given."""
+    is_float = img_hwc.dtype != np.uint8
+    n_ch = img_hwc.shape[-1]
+    img_u8 = np.ascontiguousarray((np.clip(img_hwc, 0, 1) * 255).astype(np.uint8) if is_float
+                                  else img_hwc.copy())
+    draw_target = np.repeat(img_u8, 3, axis=-1) if n_ch == 1 else img_u8
+    (tw, th), baseline = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.42, 1)
+    cv2.rectangle(draw_target, (0, 0), (tw + 6, th + baseline + 6), (0, 0, 0), -1)
+    cv2.putText(draw_target, text, (3, th + 3), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (255, 255, 255), 1, cv2.LINE_AA)
+    img_u8 = draw_target[:, :, :1] if n_ch == 1 else draw_target
+    return (img_u8.astype(np.float32) / 255.0) if is_float else img_u8
+
+
 def create_raymond_lights():
     import pyrender
     thetas = np.pi * np.array([1.0 / 6.0, 1.0 / 6.0, 1.0 / 6.0])
@@ -85,10 +102,14 @@ def render_keypoint(img: np.array, keypoint: np.array, threshold=0.1,
                 12, 18,  13, 18,  14, 8,  15, 9,  16, 10,  17, 11,  18, 24,  19, 25,  20, 0,  21, 1,  22, 24,
                 23, 24,  25, 7]
     elif keypoint.shape[0] == 18:
-        pairs = [9, 8,  8, 2,  2, 3,  3, 4,  2, 0,  2, 1,  4, 5, 
-                 5, 14,  14, 15,  4, 6,  6, 7,  7, 11,  11, 10,  
+        pairs = [9, 8,  8, 2,  2, 3,  3, 4,  2, 0,  2, 1,  4, 5,
+                 5, 14,  14, 15,  4, 6,  6, 7,  7, 11,  11, 10,
                  7, 13,  13, 12,  5, 16,  5, 17]
     else:
+        # No hand-authored skeleton connectivity for this keypoint convention
+        # (e.g. VAREN's 43 named surface keypoints). Draw the keypoints as
+        # unconnected dots rather than raising -- this is only used for
+        # tensorboard visualization, not for any loss/metric computation.
         pairs = None
     pairs = np.array(pairs).reshape(-1, 2) if pairs is not None else None
     colors = [255., 0., 85.,
@@ -205,23 +226,28 @@ class MeshRenderer:
         # rend_img_pytorch3d = self.render_by_pytorch3d(vertices, camera_translation,
         #                                               images_np, focal_length=self.focal_length)
         for i in range(vertices.shape[0]):
-            rend_img = torch.from_numpy(np.transpose(
-                self.__call__(vertices[i], camera_translation[i], images_np[i], focal_length=focal_length, side_view=False),
-                (2, 0, 1))).float()
-            rend_img_side = torch.from_numpy(np.transpose(
-                self.__call__(vertices[i], camera_translation[i], images_np[i], focal_length=focal_length, side_view=True),
-                (2, 0, 1))).float()
+            rend_img = _label_panel(self.__call__(vertices[i], camera_translation[i], images_np[i],
+                                                  focal_length=focal_length, side_view=False), "pred mesh (front)")
+            rend_img = torch.from_numpy(np.transpose(rend_img, (2, 0, 1))).float()
+            rend_img_side = _label_panel(self.__call__(vertices[i], camera_translation[i], images_np[i],
+                                                       focal_length=focal_length, side_view=True), "pred mesh (side)")
+            rend_img_side = torch.from_numpy(np.transpose(rend_img_side, (2, 0, 1))).float()
             keypoints = pred_keypoints[i]
             pred_keypoints_img = render_keypoint(255 * images_np[i].copy(), keypoints) / 255
             keypoints = gt_keypoints[i]
             gt_keypoints_img = render_keypoint(255 * images_np[i].copy(), keypoints) / 255
-            rend_imgs.append(torch.from_numpy(images[i]))
+            input_img = np.transpose(_label_panel(images_np[i], "input"), (2, 0, 1))
+            rend_imgs.append(torch.from_numpy(input_img))
             rend_imgs.append(rend_img)
             rend_imgs.append(rend_img_side)
             if pred_masks is not None:
-                rend_imgs.append(torch.from_numpy(pred_masks[i]))
+                rend_imgs.append(torch.from_numpy(
+                    np.transpose(_label_panel(np.transpose(pred_masks[i], (1, 2, 0)), "pred mask"), (2, 0, 1))))
             if gt_masks is not None:
-                rend_imgs.append(torch.from_numpy(gt_masks[i]))
+                rend_imgs.append(torch.from_numpy(
+                    np.transpose(_label_panel(np.transpose(gt_masks[i], (1, 2, 0)), "gt mask"), (2, 0, 1))))
+            pred_keypoints_img = _label_panel(pred_keypoints_img, "pred 2D keypoints")
+            gt_keypoints_img = _label_panel(gt_keypoints_img, "gt 2D keypoints")
             rend_imgs.append(torch.from_numpy(pred_keypoints_img).permute(2, 0, 1))
             rend_imgs.append(torch.from_numpy(gt_keypoints_img).permute(2, 0, 1))
         return rend_imgs
@@ -236,12 +262,24 @@ class MeshRenderer:
             alphaMode='OPAQUE',
             baseColorFactor=baseColorFactor)
 
+        # Copy, don't mutate: callers (e.g. visualize_tensorboard) reuse the
+        # same camera_translation[i] array across a front-view + side-view
+        # call pair -- mutating it in place here corrupted the second call's
+        # camera position, which is why side-view renders came out black.
+        camera_translation = camera_translation.copy()
         camera_translation[0] *= -1.
 
         mesh = trimesh.Trimesh(vertices.copy(), self.faces.copy())
         if side_view:
+            # Rotate about the mesh's OWN centroid, not the world origin: the
+            # raw vertices aren't origin-centered (camera_translation places
+            # the camera to compensate for that specific, un-rotated pose),
+            # so rotating about (0,0,0) also swings the centroid to a new
+            # world position -- at this camera's narrow FOV (long focal
+            # length over a small patch) that was enough to push the mesh
+            # out of frame entirely, rendering fully black.
             rot = trimesh.transformations.rotation_matrix(
-                np.radians(rot_angle), [0, 1, 0])
+                np.radians(rot_angle), [0, 1, 0], point=mesh.vertices.mean(axis=0))
             mesh.apply_transform(rot)
         rot = trimesh.transformations.rotation_matrix(
             np.radians(180), [1, 0, 0])
