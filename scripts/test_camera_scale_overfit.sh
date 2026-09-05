@@ -77,9 +77,9 @@ JSON_FILE="/lustre/home/okumar/outputs/horse_dataset_textured/train.json"
 ROOT_IMAGE="/lustre/home/okumar/outputs/batches"
 VAREN_MODEL_PATH="/lustre/home/okumar/VAREN/models"
 PRETRAINED_WEIGHTS="data/AniMerPlus/checkpoint.ckpt"
-NUM_SAMPLES=2
-NUM_HOLDOUT_SAMPLES=2
-STEPS=100
+NUM_SAMPLES=3000
+NUM_HOLDOUT_SAMPLES=10
+STEPS=2000
 SEED=""
 SAMPLE_OFFSET="0.0"
 DEVICE=""
@@ -87,7 +87,7 @@ DISABLE_FIX=0
 RENDER_OUT=""
 NO_RENDER=0
 CHECKPOINT_DIR=""
-CHECKPOINT_EVERY=""
+CHECKPOINT_EVERY=200
 RESUME_FROM=""
 FREEZE_ATTN=""
 FREEZE_FFN=""
@@ -135,4 +135,4 @@ ARGS=(--json-file "$JSON_FILE" --root-image "$ROOT_IMAGE" --varen-model-path "$V
 [[ -n "$FREEZE_FFN" ]] && ARGS+=(--freeze-ffn "$FREEZE_FFN")
 [[ -n "$FROZEN_STAGES" ]] && ARGS+=(--frozen-stages "$FROZEN_STAGES")
 
-micromamba run -n animer2 python3 scripts/test_camera_scale_overfit.py "${ARGS[@]}"
+python3 scripts/test_camera_scale_overfit.py "${ARGS[@]}"

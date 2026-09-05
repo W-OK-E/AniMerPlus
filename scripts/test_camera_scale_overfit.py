@@ -324,8 +324,8 @@ def save_checkpoint(model, optimizer, step, checkpoint_dir, batch, cfg, render, 
     snapshot of the current predictions on the training batch, both named by step."""
     os.makedirs(checkpoint_dir, exist_ok=True)
     ckpt_path = os.path.join(checkpoint_dir, f"step_{step:06d}.pt")
-    torch.save({'step': step, 'model': model.state_dict(), 'optimizer': optimizer.state_dict(),
-               'scheduler': scheduler.state_dict() if scheduler is not None else None}, ckpt_path)
+    # torch.save({'step': step, 'model': model.state_dict(), 'optimizer': optimizer.state_dict(),
+    #            'scheduler': scheduler.state_dict() if scheduler is not None else None}, ckpt_path)
 
     if not render:
         print(f"  [checkpoint] saved {ckpt_path}")
