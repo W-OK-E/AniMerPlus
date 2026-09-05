@@ -77,9 +77,15 @@ JSON_FILE="/lustre/home/okumar/outputs/horse_dataset_textured/train.json"
 ROOT_IMAGE="/lustre/home/okumar/outputs/batches"
 VAREN_MODEL_PATH="/lustre/home/okumar/VAREN/models"
 PRETRAINED_WEIGHTS="data/AniMerPlus/checkpoint.ckpt"
+<<<<<<< HEAD
 NUM_SAMPLES=1
 NUM_HOLDOUT_SAMPLES=1
 STEPS=3000
+=======
+NUM_SAMPLES=3000
+NUM_HOLDOUT_SAMPLES=10
+STEPS=2000
+>>>>>>> 5e754e0 (WORKING COMMIT)
 SEED=""
 SAMPLE_OFFSET="0.0"
 DEVICE=""
