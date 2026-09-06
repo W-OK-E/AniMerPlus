@@ -9,7 +9,6 @@ from ..utils.geometry import aa_to_rotmat, perspective_projection
 from ..utils.pylogger import get_pylogger
 from .backbones import create_backbone
 from .heads import build_varen_head
-from .heads.classifier_head import ClassTokenHead
 from .losses import Keypoint2DLoss, Keypoint3DLoss, ParameterLoss, SupConLoss
 from .varen_wrapper import VAREN
 
@@ -58,7 +57,6 @@ class AniMerPlusPlus(pl.LightningModule):
         # Create VAREN head
         self.varen_head = build_varen_head(cfg)
 
-        self.class_token_head = ClassTokenHead(**cfg.MODEL.get("CLASS_TOKEN_HEAD", dict()))
 
         # Define loss functions
         self.keypoint_3d_loss = Keypoint3DLoss(loss_type='l1')
@@ -88,7 +86,6 @@ class AniMerPlusPlus(pl.LightningModule):
     def get_parameters(self):
         all_params = list(self.varen_head.parameters())
         all_params += list(self.backbone.parameters())
-        all_params += list(self.class_token_head.parameters())
         return all_params
 
     def configure_optimizers(self):
@@ -123,7 +120,7 @@ class AniMerPlusPlus(pl.LightningModule):
                 by_mult.setdefault(lr_mult, []).append(p)
 
             param_groups = [{'params': params, 'lr': base_lr * lr_mult} for lr_mult, params in by_mult.items()]
-            head_params = list(self.varen_head.parameters()) + list(self.class_token_head.parameters())
+            head_params = list(self.varen_head.parameters())
             param_groups.append({'params': filter(lambda p: p.requires_grad, head_params), 'lr': base_lr})
         else:
             param_groups = [{'params': filter(lambda p: p.requires_grad, self.get_parameters()), 'lr': base_lr}]
@@ -245,7 +242,6 @@ class AniMerPlusPlus(pl.LightningModule):
         features, cls = self.forward_backbone(batch)
 
         output = dict()
-        output['cls_feats'] = self.class_token_head(cls) if self.cfg.MODEL.BACKBONE.get("USE_CLS", False) else None
 
         output['varen_output'] = self.forward_one_parametric_model(batch['focal_length'],
                                                                    features,
@@ -337,14 +333,11 @@ class AniMerPlusPlus(pl.LightningModule):
             loss_varen, losses_varen = self.compute_varen_loss(batch, output['varen_output'])
         else:
             loss_varen, losses_varen = torch.tensor(0.0, device=device, dtype=dtype), {}
-        loss_supcon = self.supcon_loss(output['cls_feats'], labels=batch['category']) if self.cfg.MODEL.BACKBONE.get("USE_CLS", False) \
-                      else torch.tensor(0.0, device=device, dtype=dtype)
-        loss = loss_varen + loss_supcon * self.cfg.LOSS_WEIGHTS['SUPCON']
+        loss = loss_varen
 
         # Saving loss
         losses = {}
         losses['loss'] = loss.detach()
-        losses['loss_supcon'] = loss_supcon.detach()
         for k, v in losses_varen.items():
             losses[k] = v.detach()
         output['losses'] = losses
