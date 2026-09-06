@@ -1,11 +1,8 @@
-from .discriminator import Discriminator
-from .smal_warapper import SMAL
-from .aves_warapper import AVES
 from .animerpp import AniMerPlusPlus
-
 
 def load_amr(checkpoint_path):
     from pathlib import Path
+
     from ..configs import get_config
     model_cfg = str(Path(checkpoint_path).parent.parent / '.hydra' / 'config.yaml')
     model_cfg = get_config(model_cfg, update_cachedir=True)

@@ -1,5 +1,5 @@
 import torch
-import torch.nn as nn
+from torch import nn
 
 
 class Discriminator(nn.Module):
@@ -8,7 +8,7 @@ class Discriminator(nn.Module):
         """
         Pose + Shape discriminator proposed in HMR
         """
-        super(Discriminator, self).__init__()
+        super().__init__()
 
         self.num_joints = 34
         # poses_alone

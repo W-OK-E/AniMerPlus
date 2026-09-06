@@ -1,8 +1,9 @@
-import torch
 from typing import Any
 
-from .renderer import Renderer
+import torch
+
 from .mesh_renderer import MeshRenderer, SilhouetteRenderer
+from .renderer import Renderer
 
 
 def recursive_to(x: Any, target: torch.device):

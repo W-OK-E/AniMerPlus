@@ -242,6 +242,7 @@ def render_wireframe_overlay(vertices, camera_translation, image, focal_length, 
     transparent keeps the underlying photo visible for comparison."""
     import pyrender
     import trimesh
+
     from amr.utils.mesh_renderer import create_raymond_lights
 
     renderer = pyrender.OffscreenRenderer(viewport_width=image.shape[1], viewport_height=image.shape[0])
@@ -375,7 +376,7 @@ def main():
     from amr.models.animerpp import AniMerPlusPlus
     from amr.utils import recursive_to
 
-    all_data, available, idxs, yaws = pick_available_samples(args.json_file, args.root_image, args.num_samples, args.sample_offset)
+    all_data, available, idxs, _yaws = pick_available_samples(args.json_file, args.root_image, args.num_samples, args.sample_offset)
     # print("train sample indices:", idxs)
     # print("train yaw angles (deg):", [round(y, 1) for y in yaws])
 
@@ -390,7 +391,10 @@ def main():
     )
     dataset.data['data'] = [all_data[i] for i in idxs]
     n_samples = len(idxs)
-    loader = DataLoader(dataset, batch_size=2, shuffle=False)
+    # batch_size must be n_samples, not a fixed 2 -- otherwise next(iter(loader))
+    # silently trains on only the first 2 of the --num-samples requested (all
+    # other selected samples are loaded into dataset.data but never used).
+    loader = DataLoader(dataset, batch_size=n_samples, shuffle=False)
     batch = recursive_to(next(iter(loader)), args.device)
 
     model = AniMerPlusPlus(cfg, init_renderer=args.render)
@@ -444,6 +448,24 @@ def main():
                  f"cam_z_min={cam_z.min():.1f} cam_z_max={cam_z.max():.1f} cam_z_neg_count={neg}")
         if checkpoint_every > 0 and (step % checkpoint_every == 0 or step == args.steps - 1):
             save_checkpoint(model, optimizer, step, args.checkpoint_dir, batch, cfg, args.render, scheduler=scheduler)
+
+    # Train-set final pixel error -- same metric as the holdout check below,
+    # but on the samples actually optimized against. Distinguishes "not
+    # fitting even memorizable examples" (a real bug) from "fits training
+    # samples fine but doesn't generalize" (capacity/data-scale limit).
+    model.eval()
+    with torch.no_grad():
+        train_output = model.forward_step(batch, train=False)
+    train_pred_2d = train_output['varen_output']['pred_keypoints_2d']
+    train_gt_2d = batch['keypoints_2d'][..., :2]
+    train_per_sample_px = ((train_pred_2d - train_gt_2d).norm(dim=-1).mean(dim=-1) * cfg.MODEL.IMAGE_SIZE).detach().cpu().numpy()
+    print("\n=== per-sample TRAIN (memorization) results ===")
+    for i in range(len(train_per_sample_px)):
+        print(f"train sample {i}: final_2d_err={train_per_sample_px[i]:7.1f}px")
+    n_train_pass = int((train_per_sample_px < args.pass_threshold_px).sum())
+    print(f"{n_train_pass}/{len(train_per_sample_px)} TRAIN samples under {args.pass_threshold_px}px threshold "
+         f"(mean {train_per_sample_px.mean():.1f}px)")
+    model.train()
 
     # Final results + render run on held-out samples (never seen during the
     # overfit loop above) -- checks generalization, not just memorization.

@@ -3,10 +3,12 @@ VAREN-shaped dataset loaders for horse data.
 """
 import copy
 import os
-import numpy as np
-from yacs.config import CfgNode
+
 import cv2
+import numpy as np
 import pyrootutils
+from yacs.config import CfgNode
+
 root = pyrootutils.setup_root(
     search_from=__file__,
     indicator=[".git", "pyproject.toml"],
@@ -15,10 +17,11 @@ root = pyrootutils.setup_root(
 )
 
 import json
+
 from PIL import Image
-from typing import List
 from torch.utils.data import Dataset
-from .utils import get_example, expand_to_aspect_ratio
+
+from .utils import crop_camera_translation, expand_to_aspect_ratio, get_example
 
 HORSE_CATEGORY_ID = 1000
 HORSE_SUPERCATEGORY_ID = 1000
@@ -39,8 +42,8 @@ def _load_varen_item(data: dict, root_image: str, focal_length: float,
     supercategory_idx = int(data.get('supercategory', HORSE_SUPERCATEGORY_ID))
 
     keypoint_2d = np.array(data['keypoint_2d'], dtype=np.float32)  # [43, 3] (x, y, vis)
-    # The dataset's exported frame (+Y up) and the pipeline's camera frame (+Y
-    # down, +Z depth) differ by exactly a 180-degree rotation about X, hence correction needed
+    # DATASET +Y-up, +Z-backwards, +X-right #!CONFIRM Z
+    # PIPELINE +Y-down, +Z-forward, +X-right
     keypoint_3d_xyz = np.array(data['keypoint_3d'], dtype=np.float32) * np.array([1., -1., -1.], dtype=np.float32)
     keypoint_3d = np.concatenate(
         (keypoint_3d_xyz,
@@ -70,7 +73,9 @@ def _load_varen_item(data: dict, root_image: str, focal_length: float,
         raise ValueError(
             f"VAREN dataset item {key!r}: 'shape' has length {betas.shape[0]}, expected {num_betas}."
         )
-    translation = np.array(data['trans'], dtype=np.float32)  # [3]
+    # Same +Y-up -> +Y-down convention mismatch, however, does not apply to the 
+    # depth value which is distance, not a coordinate that rotates.
+    translation = np.array(data['trans'], dtype=np.float32) * np.array([1., -1., 1.], dtype=np.float32)  # [3]
     has_pose = np.array(1., dtype=np.float32)
     has_betas = np.array(1., dtype=np.float32)
     has_translation = np.array(1., dtype=np.float32)
@@ -105,6 +110,11 @@ def _load_varen_item(data: dict, root_image: str, focal_length: float,
     mask_patch = (img_patch_rgba[3, :, :] / 255.0).clip(0, 1)
     if (mask_patch < 0.5).all():
         mask_patch = np.ones_like(mask_patch)
+
+    # `transl` arrives in the renderer's metric frame; pred_cam_t lives in the
+    # crop camera, so it must be converted before it can supervise anything.
+    aug_params['transl'] = crop_camera_translation(
+        aug_params['transl'], trans, image.shape[:2], focal_length, img_size)
 
     varen_params = {'global_orient': aug_params['global_orient'],
                     'body_pose': aug_params['pose'],
@@ -187,7 +197,11 @@ class VARENEvaluationDataset(Dataset):
     def __init__(self, root_image: str, json_file: str, augm_config,
                 focal_length: int = 1000, image_size: int = 256,
                 num_joints: int = 37, num_betas: int = 39,
-                mean: List[float] = [0.485, 0.456, 0.406], std: List[float] = [0.229, 0.224, 0.225]):
+                mean: list[float] | None = None, std: list[float] | None = None):
+        if std is None:
+            std = [0.229, 0.224, 0.225]
+        if mean is None:
+            mean = [0.485, 0.456, 0.406]
         super().__init__()
         self.root_image = root_image
         self.focal_length = focal_length

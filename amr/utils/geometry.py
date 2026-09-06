@@ -1,4 +1,4 @@
-from typing import Optional
+
 import torch
 from torch.nn import functional as F
 
@@ -67,8 +67,8 @@ def rot6d_to_rotmat(x: torch.Tensor) -> torch.Tensor:
 def perspective_projection(points: torch.Tensor,
                            translation: torch.Tensor,
                            focal_length: torch.Tensor,
-                           camera_center: Optional[torch.Tensor] = None,
-                           rotation: Optional[torch.Tensor] = None) -> torch.Tensor:
+                           camera_center: torch.Tensor | None = None,
+                           rotation: torch.Tensor | None = None) -> torch.Tensor:
     """
     Computes the perspective projection of a set of 3D points.
     Args:

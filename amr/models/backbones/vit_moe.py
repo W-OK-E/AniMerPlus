@@ -1,10 +1,10 @@
 # Copyright (c) OpenMMLab. All rights reserved.
-import torch
 from functools import partial
-import torch.nn as nn
-import torch.utils.checkpoint as checkpoint
 
-from timm.layers import trunc_normal_, drop_path, to_2tuple
+import torch
+from timm.layers import drop_path, to_2tuple, trunc_normal_
+from torch import nn
+from torch.utils import checkpoint
 
 
 class PatchEmbed(nn.Module):
@@ -75,7 +75,7 @@ def vithmoe(cfg):
         depth=32,
         num_heads=16,
         ratio=1,
-        use_checkpoint=False,
+        use_checkpoint=cfg.MODEL.BACKBONE.get("USE_CHECKPOINT", False),
         mlp_ratio=4,
         qkv_bias=True,
         drop_path_rate=0.55,
@@ -134,14 +134,14 @@ class DropPath(nn.Module):
     """
 
     def __init__(self, drop_prob=None):
-        super(DropPath, self).__init__()
+        super().__init__()
         self.drop_prob = drop_prob
 
     def forward(self, x):
         return drop_path(x, self.drop_prob, self.training)
 
     def extra_repr(self):
-        return 'p={}'.format(self.drop_prob)
+        return f'p={self.drop_prob}'
 
 
 class MoEMlp(nn.Module):
@@ -221,7 +221,7 @@ class ViTMoE(nn.Module):
                  num_expert=1, part_features=None
                  ):
         # Protect mutable default arguments
-        super(ViTMoE, self).__init__()
+        super().__init__()
         norm_layer = norm_layer or partial(nn.LayerNorm, eps=1e-6)
         self.num_classes = num_classes
         self.num_features = self.embed_dim = embed_dim  # num_features for consistency with other models
@@ -278,7 +278,7 @@ class ViTMoE(nn.Module):
                 param.requires_grad = False
 
         if self.freeze_attn:
-            for i in range(0, self.depth):
+            for i in range(self.depth):
                 m = self.blocks[i]
                 m.attn.eval()
                 m.norm1.eval()
@@ -292,7 +292,7 @@ class ViTMoE(nn.Module):
             self.patch_embed.eval()
             for param in self.patch_embed.parameters():
                 param.requires_grad = False
-            for i in range(0, self.depth):
+            for i in range(self.depth):
                 m = self.blocks[i]
                 m.mlp.eval()
                 m.norm2.eval()

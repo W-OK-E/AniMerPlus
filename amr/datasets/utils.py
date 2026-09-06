@@ -2,15 +2,14 @@
 Parts of the code are taken or adapted from
 https://github.com/mkocabas/EpipolarPose/blob/master/lib/utils/img_utils.py
 """
-import torch
-import numpy as np
-from skimage.transform import rotate, resize
-from skimage.filters import gaussian
 import random
+
 import cv2
-from typing import List, Dict, Tuple
+import numpy as np
+import torch
+from skimage.filters import gaussian
+from skimage.transform import resize, rotate
 from yacs.config import CfgNode
-from typing import Union
 
 
 def expand_to_aspect_ratio(input_shape, target_aspect_ratio=None):
@@ -31,11 +30,59 @@ def expand_to_aspect_ratio(input_shape, target_aspect_ratio=None):
         h_new = h
         w_new = max(h * w_t / h_t, w)
     if h_new < h or w_new < w:
-        breakpoint()
+        print(f"Warning: expanding to aspect ratio {target_aspect_ratio} "
+              f"would shrink the bounding box {input_shape} to {(w_new, h_new)}")
     return np.array([w_new, h_new])
 
 
-def do_augmentation(aug_config: CfgNode) -> Tuple:
+def crop_camera_translation(transl: np.ndarray, crop_affine: np.ndarray,
+                            image_hw: tuple[float, float], focal_length: float,
+                            patch_size: int) -> np.ndarray:
+    """Re-express a metric camera translation in the pipeline's crop camera.
+
+    The renderer produced the full image at `image_hw` with `focal_length`, the
+    subject at depth transl[2]. The model instead projects a `patch_size`-px
+    crop while still assuming that same focal (see
+    animerpp.forward_one_parametric_model), so to subtend the same angle the
+    subject must sit further back by the crop's downscale factor, and be
+    shifted to undo the crop being off-centre:
+
+        TZ = tz * box / patch_size
+        TX = tx + tz * (W/2 - cx) / focal_length
+        TY = ty + tz * (H/2 - cy) / focal_length
+
+    The effective box/centre are recovered from `crop_affine` (the transform
+    get_example actually applied, augmentation included) rather than from the
+    raw bbox, because scale/translation augmentation re-randomises the crop
+    every epoch -- DATASETS.CONFIG.SCALE_FACTOR alone moves the box +/-30%, so
+    a bbox-derived value would be wrong by that much on most samples, and no
+    single precomputed value could be stored in the dataset at all.
+
+    Args:
+        transl: (3,) metric translation of the subject in the camera frame.
+        crop_affine: (2,3) affine mapping original-image px -> patch px.
+        image_hw: (height, width) of the original image, in px.
+        focal_length: focal length the image was rendered with, in px.
+        patch_size: side length of the square crop fed to the network, in px.
+    Returns:
+        (3,) float32 translation in the crop camera. Note the returned z is a
+        *virtual* depth in that camera, not a physical distance.
+    """
+    A = crop_affine[:2, :2].astype(np.float64)
+    scale = np.sqrt(abs(np.linalg.det(A)))                      # patch_size / box
+    box = patch_size / max(scale, 1e-8)
+    centre = np.linalg.solve(
+        A, np.array([patch_size, patch_size], dtype=np.float64) / 2.0
+           - crop_affine[:2, 2].astype(np.float64))
+    h, w = float(image_hw[0]), float(image_hw[1])
+    t = np.asarray(transl, dtype=np.float64).reshape(3)
+    tz = float(t[2])
+    return np.array([t[0] + tz * (w / 2.0 - centre[0]) / focal_length,
+                     t[1] + tz * (h / 2.0 - centre[1]) / focal_length,
+                     tz * box / patch_size], dtype=np.float32)
+
+
+def do_augmentation(aug_config: CfgNode) -> tuple:
     """
     Compute random augmentation parameters.
     Args:
@@ -156,7 +203,7 @@ def get_transform(center, scale, res, rot=0):
     t[0, 2] = res[1] * (-float(center[0]) / h + .5)
     t[1, 2] = res[0] * (-float(center[1]) / h + .5)
     t[2, 2] = 1
-    if not rot == 0:
+    if rot != 0:
         rot = -rot  # To match direction of rotation from cropping
         rot_mat = np.zeros((3, 3))
         rot_rad = rot * np.pi / 180
@@ -213,7 +260,7 @@ def generate_image_patch_skimage(img: np.array, c_x: float, c_y: float,
                                  bb_width: float, bb_height: float,
                                  patch_width: float, patch_height: float,
                                  do_flip: bool, scale: float, rot: float,
-                                 border_mode=cv2.BORDER_CONSTANT, border_value=0) -> Tuple[np.array, np.array]:
+                                 border_mode=cv2.BORDER_CONSTANT, border_value=0) -> tuple[np.array, np.array]:
     """
     Crop image according to the supplied bounding box.
     Args:
@@ -232,7 +279,7 @@ def generate_image_patch_skimage(img: np.array, c_x: float, c_y: float,
         trans (np.array): Transformation matrix.
     """
 
-    img_height, img_width, img_channels = img.shape
+    _img_height, img_width, _img_channels = img.shape
     if do_flip:
         img = img[:, ::-1, :]
         c_x = img_width - c_x - 1
@@ -263,9 +310,9 @@ def generate_image_patch_skimage(img: np.array, c_x: float, c_y: float,
     # Padding so that when rotated proper amount of context is included
     try:
         pad = int(np.linalg.norm(br - ul) / 2 - float(br[1] - ul[1]) / 2) + 1
-    except:
-        breakpoint()
-    if not rot == 0:
+    except Exception:
+        print("Error in computing padding for image crop. Please check the bounding box and image size.")
+    if rot != 0:
         ul -= pad
         br += pad
 
@@ -295,21 +342,14 @@ def generate_image_patch_skimage(img: np.array, c_x: float, c_y: float,
     # print(f'{np.allclose(new_img, new_img1)=}')
     # print(f'{img.dtype=}')
 
-    if not rot == 0:
+    if rot != 0:
         # Remove padding
 
         new_img = rotate(new_img, rot)  # scipy.misc.imrotate(new_img, rot)
         new_img = new_img[pad:-pad, pad:-pad]
 
     if new_img.shape[0] < 1 or new_img.shape[1] < 1:
-        print(f'{img.shape=}')
-        print(f'{new_img.shape=}')
-        print(f'{ul=}')
-        print(f'{br=}')
-        print(f'{pad=}')
-        print(f'{rot=}')
-
-        breakpoint()
+        print(f"Warning: image crop is empty. Please check the bounding box and image size. {new_img.shape=}, {ul=}, {br=}, {pad=}")
 
     # resize image
     new_img = resize(new_img, res)  # scipy.misc.imresize(new_img, res)
@@ -323,7 +363,7 @@ def generate_image_patch_cv2(img: np.array, c_x: float, c_y: float,
                              bb_width: float, bb_height: float,
                              patch_width: float, patch_height: float,
                              do_flip: bool, scale: float, rot: float,
-                             border_mode=cv2.BORDER_CONSTANT, border_value=0) -> Tuple[np.array, np.array]:
+                             border_mode=cv2.BORDER_CONSTANT, border_value=0) -> tuple[np.array, np.array]:
     """
     Crop the input image and return the crop and the corresponding transformation matrix.
     Args:
@@ -342,7 +382,7 @@ def generate_image_patch_cv2(img: np.array, c_x: float, c_y: float,
         trans (np.array): Transformation matrix.
     """
 
-    img_height, img_width, img_channels = img.shape
+    _img_height, img_width, _img_channels = img.shape
     if do_flip:
         img = img[:, ::-1, :]
         c_x = img_width - c_x - 1
@@ -382,7 +422,7 @@ def convert_cvimg_to_tensor(cvimg: np.array):
     return img
 
 
-def fliplr_params(smal_params: Dict, has_smal_params: Dict) -> Tuple[Dict, Dict]:
+def fliplr_params(smal_params: dict, has_smal_params: dict) -> tuple[dict, dict]:
     """
     Flip SMAL parameters when flipping the image.
     Args:
@@ -422,7 +462,7 @@ def fliplr_params(smal_params: Dict, has_smal_params: Dict) -> Tuple[Dict, Dict]
     return smal_params, has_smal_params
 
 
-def fliplr_keypoints(joints: np.array, width: float, flip_permutation: List[int]) -> np.array:
+def fliplr_keypoints(joints: np.array, width: float, flip_permutation: list[int]) -> np.array:
     """
     Flip 2D or 3D keypoints.
     Args:
@@ -450,7 +490,7 @@ def keypoint_3d_processing(keypoints_3d: np.array, rot: float, filp: bool) -> np
     """
     # in-plane rotation
     rot_mat = np.eye(3, dtype=np.float32)
-    if not rot == 0:
+    if rot != 0:
         rot_rad = -rot * np.pi / 180
         sn, cs = np.sin(rot_rad), np.cos(rot_rad)
         rot_mat[0, :2] = [cs, -sn]
@@ -484,7 +524,7 @@ def rot_aa(aa: np.array, rot: float) -> np.array:
     return aa.astype(np.float32)
 
 
-def smal_param_processing(smal_params: Dict, has_smal_params: Dict, rot: float, do_flip: bool) -> Tuple[Dict, Dict]:
+def smal_param_processing(smal_params: dict, has_smal_params: dict, rot: float, do_flip: bool) -> tuple[dict, dict]:
     """
     Apply random augmentations to the SMAL parameters.
     Args:
@@ -505,17 +545,17 @@ def smal_param_processing(smal_params: Dict, has_smal_params: Dict, rot: float, 
     return smal_params, has_smal_params
 
 
-def get_example(img_path: Union[str,np.ndarray], center_x: float, center_y: float,
+def get_example(img_path: str | np.ndarray, center_x: float, center_y: float,
                 width: float, height: float,
                 keypoints_2d: np.array, keypoints_3d: np.array,
-                smal_params: Dict, has_smal_params: Dict,
+                smal_params: dict, has_smal_params: dict,
                 patch_width: int, patch_height: int,
                 mean: np.array, std: np.array,
                 do_augment: bool, augm_config: CfgNode,
                 is_bgr: bool = True,
                 use_skimage_antialias: bool = False,
                 border_mode: int = cv2.BORDER_CONSTANT,
-                return_trans: bool = False,) -> Tuple:
+                return_trans: bool = False,) -> tuple:
     """
     Get an example from the dataset and (possibly) apply random augmentations.
     Args:
@@ -547,7 +587,7 @@ def get_example(img_path: Union[str,np.ndarray], center_x: float, center_y: floa
         # 1. load image
         cvimg = cv2.imread(img_path, cv2.IMREAD_COLOR | cv2.IMREAD_IGNORE_ORIENTATION)
         if not isinstance(cvimg, np.ndarray):
-            raise IOError("Fail to read %s" % img_path)
+            raise OSError(f"Fail to read {img_path}")
     elif isinstance(img_path, np.ndarray):
         cvimg = img_path
     else:
@@ -564,8 +604,6 @@ def get_example(img_path: Union[str,np.ndarray], center_x: float, center_y: floa
         scale, rot, do_flip, do_extreme_crop, extreme_crop_lvl, color_scale, tx, ty = 1.0, 0, False, False, 0, [1.0,
                                                                                                                 1.0,
                                                                                                                 1.0], 0., 0.
-    if width < 1 or height < 1:
-        breakpoint()
 
     if do_extreme_crop:
         if extreme_crop_lvl == 0:
@@ -635,7 +673,7 @@ def get_cub17_example(cvimg: np.array,
                 patch_width: int, patch_height: int,
                 mean: np.array, std: np.array,
                 do_augment: bool, augm_config: CfgNode,
-                return_trans=True) -> Tuple:
+                return_trans=True) -> tuple:
     """
     Get an example from the dataset and (possibly) apply random augmentations.
     Args:
@@ -663,9 +701,9 @@ def get_cub17_example(cvimg: np.array,
     # 2. get augmentation params
     if do_augment:
         # box rescale factor, rotation angle, flip or not flip, crop or not crop, ..., color scale, translation x, ...
-        scale, rot, do_flip, do_extreme_crop, extreme_crop_lvl, color_scale, tx, ty = do_augmentation(augm_config)
+        scale, rot, do_flip, _do_extreme_crop, _extreme_crop_lvl, color_scale, tx, ty = do_augmentation(augm_config)
     else:
-        scale, rot, do_flip, do_extreme_crop, extreme_crop_lvl, color_scale, tx, ty = 1.0, 0, False, False, 0, [1.0,
+        scale, rot, do_flip, _do_extreme_crop, _extreme_crop_lvl, color_scale, tx, ty = 1.0, 0, False, False, 0, [1.0,
                                                                                                                 1.0,
                                                                                                                 1.0], 0., 0.
     # bounding box height and width
@@ -701,7 +739,7 @@ def get_cub17_example(cvimg: np.array,
         return img_patch, keypoints_2d, img_size, img_border_mask
 
 
-def crop_to_hips(center_x: float, center_y: float, width: float, height: float, keypoints_2d: np.array) -> Tuple:
+def crop_to_hips(center_x: float, center_y: float, width: float, height: float, keypoints_2d: np.array) -> tuple:
     """
     Extreme cropping: Crop the box up to the hip locations.
     Args:
@@ -994,7 +1032,7 @@ def upper_body(keypoints_2d: np.array):
         and ((keypoints_2d[upper_body_keypoints + upper_body_keypoints_openpose, -1] > 0).sum() >= 2)
 
 
-def get_bbox(keypoints_2d: np.array, rescale: float = 1.2) -> Tuple:
+def get_bbox(keypoints_2d: np.array, rescale: float = 1.2) -> tuple:
     """
     Get center and scale for bounding box from openpose detections.
     Args:
@@ -1014,7 +1052,7 @@ def get_bbox(keypoints_2d: np.array, rescale: float = 1.2) -> Tuple:
     return center, scale
 
 
-def extreme_cropping(center_x: float, center_y: float, width: float, height: float, keypoints_2d: np.array) -> Tuple:
+def extreme_cropping(center_x: float, center_y: float, width: float, height: float, keypoints_2d: np.array) -> tuple:
     """
     Perform extreme cropping
     Args:
@@ -1048,7 +1086,7 @@ def extreme_cropping(center_x: float, center_y: float, width: float, height: flo
 
 
 def extreme_cropping_aggressive(center_x: float, center_y: float, width: float, height: float,
-                                keypoints_2d: np.array) -> Tuple:
+                                keypoints_2d: np.array) -> tuple:
     """
     Perform aggressive extreme cropping
     Args:

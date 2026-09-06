@@ -2,20 +2,23 @@ import os
 
 if 'PYOPENGL_PLATFORM' not in os.environ:
     os.environ['PYOPENGL_PLATFORM'] = 'egl'
-import torch
-from torchvision.utils import make_grid
+import math
+
+import cv2
 import numpy as np
 import pyrender
+import torch
 import trimesh
-import cv2
-import math
-import torch.nn.functional as F
-from typing import List, Tuple
-
-from pytorch3d.renderer import RasterizationSettings, MeshRasterizer, SoftSilhouetteShader, BlendParams
+from pytorch3d.renderer import (
+    BlendParams,
+    FoVPerspectiveCameras,
+    MeshRasterizer,
+    RasterizationSettings,
+    SoftSilhouetteShader,
+)
 from pytorch3d.renderer import MeshRenderer as Pytorch3dMeshRender
 from pytorch3d.structures import Meshes
-from pytorch3d.renderer import PerspectiveCameras, FoVPerspectiveCameras
+from torchvision.utils import make_grid
 
 
 def create_raymond_lights():
@@ -48,7 +51,7 @@ def create_raymond_lights():
     return nodes
 
 
-def get_keypoints_rectangle(keypoints: np.array, threshold: float) -> Tuple[float, float, float]:
+def get_keypoints_rectangle(keypoints: np.array, threshold: float) -> tuple[float, float, float]:
     """
     Compute rectangle enclosing keypoints above the threshold.
     Args:

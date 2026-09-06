@@ -1,5 +1,4 @@
 import copy
-from typing import List, Optional
 
 import torch
 
@@ -45,7 +44,7 @@ class SequentialCond(torch.nn.Sequential):
         return input
 
 
-def normalization_layer(norm: Optional[str], dim: int, norm_cond_dim: int = -1):
+def normalization_layer(norm: str | None, dim: int, norm_cond_dim: int = -1):
     if norm == "batch":
         return torch.nn.BatchNorm1d(dim)
     elif norm == "layer":
@@ -62,9 +61,9 @@ def normalization_layer(norm: Optional[str], dim: int, norm_cond_dim: int = -1):
 def linear_norm_activ_dropout(
     input_dim: int,
     output_dim: int,
-    activation: torch.nn.Module = torch.nn.ReLU(),
+    activation: torch.nn.Module = torch.nn.ReLU,
     bias: bool = True,
-    norm: Optional[str] = "layer",  # Options: ada/batch/layer
+    norm: str | None = "layer",  # Options: ada/batch/layer
     dropout: float = 0.0,
     norm_cond_dim: int = -1,
 ) -> SequentialCond:
@@ -80,11 +79,11 @@ def linear_norm_activ_dropout(
 
 def create_simple_mlp(
     input_dim: int,
-    hidden_dims: List[int],
+    hidden_dims: list[int],
     output_dim: int,
-    activation: torch.nn.Module = torch.nn.ReLU(),
+    activation: torch.nn.Module = torch.nn.ReLU,
     bias: bool = True,
-    norm: Optional[str] = "layer",  # Options: ada/batch/layer
+    norm: str | None = "layer",  # Options: ada/batch/layer
     dropout: float = 0.0,
     norm_cond_dim: int = -1,
 ) -> SequentialCond:
@@ -108,9 +107,9 @@ class ResidualMLPBlock(torch.nn.Module):
         hidden_dim: int,
         num_hidden_layers: int,
         output_dim: int,
-        activation: torch.nn.Module = torch.nn.ReLU(),
+        activation: torch.nn.Module = torch.nn.ReLU,
         bias: bool = True,
-        norm: Optional[str] = "layer",  # Options: ada/batch/layer
+        norm: str | None = "layer",  # Options: ada/batch/layer
         dropout: float = 0.0,
         norm_cond_dim: int = -1,
     ):
@@ -143,9 +142,9 @@ class ResidualMLP(torch.nn.Module):
         hidden_dim: int,
         num_hidden_layers: int,
         output_dim: int,
-        activation: torch.nn.Module = torch.nn.ReLU(),
+        activation: torch.nn.Module = torch.nn.ReLU,
         bias: bool = True,
-        norm: Optional[str] = "layer",  # Options: ada/batch/layer
+        norm: str | None = "layer",  # Options: ada/batch/layer
         dropout: float = 0.0,
         num_blocks: int = 1,
         norm_cond_dim: int = -1,

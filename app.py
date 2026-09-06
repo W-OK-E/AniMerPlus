@@ -1,21 +1,20 @@
-from pathlib import Path
-import torch
 import os
-import cv2
-import numpy as np
 import tempfile
-from tqdm import tqdm
-import torch.utils
-import trimesh
-import torch.utils.data
+
+import cv2
 import gradio as gr
-from typing import Union, List, Tuple, Dict
-from amr.models import AniMerPlusPlus
+import numpy as np
+import torch
+import torch.utils
+import torch.utils.data
+import trimesh
+from amr.datasets.vitdet_dataset import DEFAULT_MEAN, DEFAULT_STD, ViTDetDataset
+from tqdm import tqdm
+
 from amr.configs import get_config
+from amr.models import AniMerPlusPlus
 from amr.utils import recursive_to
-from amr.datasets.vitdet_dataset import ViTDetDataset, DEFAULT_MEAN, DEFAULT_STD
 from amr.utils.renderer import Renderer, cam_crop_to_full
-from huggingface_hub import snapshot_download
 
 LIGHT_BLUE = (0.85882353, 0.74117647, 0.65098039)
 
@@ -45,7 +44,7 @@ def predict(im):
     return im["composite"]
 
 
-def inference(img: Dict, animal_type: str) -> Tuple[Union[np.ndarray|None], List[str]]:
+def inference(img: dict, animal_type: str) -> tuple[np.ndarray|None, list[str]]:
     img = np.array(img["composite"])[:, :, :-1]
     boxes = np.array([[0, 0, img.shape[1], img.shape[0]]])  # x1, y1, x2, y2
 
@@ -62,7 +61,6 @@ def inference(img: Dict, animal_type: str) -> Tuple[Union[np.ndarray|None], List
     dataloader = torch.utils.data.DataLoader(dataset, batch_size=1)
     all_verts = []
     all_cam_t = []
-    temp_name = next(tempfile._get_candidate_names())
     for batch in tqdm(dataloader):
         batch = recursive_to(batch, device)
         with torch.no_grad():

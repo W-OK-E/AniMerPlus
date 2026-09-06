@@ -1,56 +1,22 @@
 import torch
-from torch.utils.data import ConcatDataset
-from .animal3d_dataset import *
-from .cub17_dataset import *
-from .varen_dataset import VARENTrain3DDataset
 from yacs.config import CfgNode
+
 from ..utils.pylogger import get_pylogger
+from .varen_dataset import VARENTrain3DDataset
 
 log = get_pylogger(__name__)
 
 
 class AniMerPlusPlusDataset(torch.utils.data.Dataset):
     def __init__(self, cfg: CfgNode):
-        datasets = []
-        weights = []
-
+        """This abstract class exists so that if and when we are creating datasets for other animals
+        or species, we can just add them here and concatenate them together."""
         dataset_configs = cfg.DATASETS
-        if dataset_configs.ANIMAL3D.WEIGHT > 0.:
-            self.animal3d_dataset = Train3DDataset(cfg, is_train=True, 
-                                                   root_image=dataset_configs.ANIMAL3D.ROOT_IMAGE, 
-                                                   json_file=dataset_configs.ANIMAL3D.JSON_FILE.TRAIN)
-            datasets.append(self.animal3d_dataset)
-            weights.extend([dataset_configs.ANIMAL3D.WEIGHT] * len(self.animal3d_dataset))
-            log.info("Animal3D Dataset loading finish, weight: {}".format(dataset_configs.ANIMAL3D.WEIGHT))
-        
-        if dataset_configs.CUB.WEIGHT > 0:
-            cub_dataset = CUBDataset(cfg, is_train=True)
-            datasets.append(cub_dataset)
-            weights.extend([dataset_configs.CUB.WEIGHT] * len(cub_dataset))
-            log.info("CUB Dataset loading finish, weight: {}".format(dataset_configs.CUB.WEIGHT))
-        
-        if dataset_configs.CTRLAVES3D.WEIGHT > 0:
-            ctrlaves3d_dataset = Train3DDataset(cfg, is_train=True, 
-                                                root_image=dataset_configs.CTRLAVES3D.ROOT_IMAGE, 
-                                                json_file=dataset_configs.CTRLAVES3D.JSON_FILE.TRAIN)
-            datasets.append(ctrlaves3d_dataset)
-            weights.extend([dataset_configs.CTRLAVES3D.WEIGHT] * len(ctrlaves3d_dataset))
-            log.info("CTRLAVES3D Dataset loading finish, weight: {}".format(dataset_configs.CTRLAVES3D.WEIGHT))
-
-        if dataset_configs.get("HORSE", None) is not None and dataset_configs.HORSE.WEIGHT > 0:
-            self.horse_dataset = VARENTrain3DDataset(cfg, is_train=True,
-                                                      root_image=dataset_configs.HORSE.ROOT_IMAGE,
-                                                      json_file=dataset_configs.HORSE.JSON_FILE.TRAIN)
-            datasets.append(self.horse_dataset)
-            weights.extend([dataset_configs.HORSE.WEIGHT] * len(self.horse_dataset))
-            log.info("HORSE (VAREN) Dataset loading finish, weight: {}".format(dataset_configs.HORSE.WEIGHT))
-
-        # Concatenate all enabled datasets
-        if datasets:
-            self.dataset = ConcatDataset(datasets)
-            self.weights = torch.tensor(weights, dtype=torch.float32)
-        else:
-            raise ValueError("No datasets enabled in the configuration.")
+        self.dataset = None
+        self.dataset = VARENTrain3DDataset(cfg, is_train=True,
+                                                    root_image=dataset_configs.HORSE.ROOT_IMAGE,
+                                                    json_file=dataset_configs.HORSE.JSON_FILE.TRAIN)
+        log.info("HORSE Dataset loading finished")        
     
     def __len__(self):
         return len(self.dataset)

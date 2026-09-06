@@ -1,5 +1,6 @@
+from typing import NewType
+
 import torch
-from typing import Optional, NewType
 from varen import VAREN as VARENModel
 
 Tensor = NewType('Tensor', torch.Tensor)
@@ -24,7 +25,7 @@ class VAREN(torch.nn.Module):
                 global_orient: Tensor,
                 body_pose: Tensor,
                 betas: Tensor,
-                transl: Optional[Tensor] = None,
+                transl: Tensor | None = None,
                 pose2rot: bool = True,
                 **kwargs):
         return self.model(betas=betas,

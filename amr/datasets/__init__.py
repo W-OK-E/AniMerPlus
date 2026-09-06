@@ -1,13 +1,12 @@
-from typing import Dict, Optional
-from torch.utils.data import WeightedRandomSampler
-import torch
 import pytorch_lightning as pl
+import torch
+from torch.utils.data import WeightedRandomSampler
 from yacs.config import CfgNode
-from .animal3d_dataset import *
-from .cub17_dataset import *
-from .varen_dataset import VARENTrain3DDataset
-from .animerpp_dataset import AniMerPlusPlusDataset
+
 from amr.utils.pylogger import get_pylogger
+
+from .animerpp_dataset import AniMerPlusPlusDataset
+from .varen_dataset import VARENTrain3DDataset
 
 log = get_pylogger(__name__)
 
@@ -27,7 +26,7 @@ class AniMerPlusPlusDataModule(pl.LightningDataModule):
         self.mocap_dataset = None
         self.weight_sampler = None
 
-    def setup(self, stage: Optional[str] = None) -> None:
+    def setup(self, stage: str | None = None) -> None:
         """
         Load datasets necessary for training
         Args:
@@ -40,29 +39,22 @@ class AniMerPlusPlusDataModule(pl.LightningDataModule):
         if self.val_dataset is None:
             # AniMerPlusPlus.forward_step is VAREN-only (see amr/models/animerpp.py):
             # it always predicts the 43 VAREN surface keypoints, regardless of which
-            # dataset a batch came from. Validating against ANIMAL3D's SMAL-shaped
-            # ground truth (26 keypoints) would therefore fail shape-wise inside
-            # compute_varen_loss. Prefer the VAREN-shaped HORSE dataset for
-            # validation whenever it's configured; fall back to the legacy ANIMAL3D
-            # dataset only for backward compatibility (e.g. inspecting the backbone/
-            # renderer without a VAREN validation split configured yet).
+            # dataset a batch came from, so validation must use a VAREN-shaped
+            # dataset -- SMAL-shaped ground truth (26 keypoints) would fail
+            # shape-wise inside compute_varen_loss. The legacy ANIMAL3D fallback
+            # that used to live here went away with animal3d_dataset.py.
             dataset_configs = self.cfg.DATASETS
-            if dataset_configs.get("HORSE", None) is not None and dataset_configs.HORSE.WEIGHT > 0:
-                self.val_dataset = VARENTrain3DDataset(self.cfg, is_train=False,
-                                                        root_image=dataset_configs.HORSE.ROOT_IMAGE,
-                                                        json_file=dataset_configs.HORSE.JSON_FILE.TEST)
-            else:
-                self.val_dataset = Train3DDataset(self.cfg, is_train=False,
-                                                  root_image=self.cfg.DATASETS.ANIMAL3D.ROOT_IMAGE,
-                                                  json_file=self.cfg.DATASETS.ANIMAL3D.JSON_FILE.TEST)
+            self.val_dataset = VARENTrain3DDataset(self.cfg, is_train=False,
+                                                   root_image=dataset_configs.HORSE.ROOT_IMAGE,
+                                                   json_file=dataset_configs.HORSE.JSON_FILE.TEST)
 
-    def train_dataloader(self) -> Dict:
+    def train_dataloader(self) -> dict:
         """
         Setup training data loader.
         Returns:
             Dict: Dictionary containing image and dataloaders
         """
-        shuffle = False if self.weight_sampler is not None else True
+        shuffle = not self.weight_sampler is not None
         train_dataloader = torch.utils.data.DataLoader(self.train_dataset, self.cfg.TRAIN.BATCH_SIZE, drop_last=True,
                                                        num_workers=self.cfg.GENERAL.NUM_WORKERS,
                                                        prefetch_factor=self.cfg.GENERAL.PREFETCH_FACTOR,

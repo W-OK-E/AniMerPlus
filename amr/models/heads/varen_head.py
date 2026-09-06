@@ -1,15 +1,16 @@
-import torch
-import torch.nn as nn
 import einops
-from ..components.pose_transformer import TransformerDecoder
+import torch
+from torch import nn
+
 from ...utils.geometry import rot6d_to_rotmat
+from ..components.pose_transformer import TransformerDecoder
 
 
 def build_varen_head(cfg):
     varen_head_type = cfg.MODEL.VAREN_HEAD.get('TYPE', 'transformer_decoder')
     if varen_head_type == 'transformer_decoder':
         return VARENTransformerDecoderHead(cfg)
-    raise ValueError('Unknown VAREN head type: {}'.format(varen_head_type))
+    raise ValueError(f'Unknown VAREN head type: {varen_head_type}')
 
 
 class VARENTransformerDecoderHead(nn.Module):
@@ -19,15 +20,15 @@ class VARENTransformerDecoderHead(nn.Module):
         self.cfg = cfg
         self.joint_rep_type = cfg.MODEL.VAREN_HEAD.get('JOINT_REP', '6d')
         if self.joint_rep_type not in ('6d', 'aa'):
-            raise ValueError('Unknown VAREN head joint representation: {}'.format(self.joint_rep_type))
+            raise ValueError(f'Unknown VAREN head joint representation: {self.joint_rep_type}')
         self.joint_rep_dim = {'6d': 6, 'aa': 3}[self.joint_rep_type]
         npose = self.joint_rep_dim * (cfg.VAREN.NUM_JOINTS + 1)
         self.input_is_mean_shape = cfg.MODEL.VAREN_HEAD.get('TRANSFORMER_INPUT', 'zero') == 'mean_shape'
-        transformer_args = dict(
-            num_tokens=1,
-            token_dim=(npose + cfg.VAREN.get('NUM_BETAS', 39) + 3) if self.input_is_mean_shape else 1,
-            dim=1024,
-        )
+        transformer_args = {
+            'num_tokens': 1,
+            'token_dim': (npose + cfg.VAREN.get('NUM_BETAS', 39) + 3) if self.input_is_mean_shape else 1,
+            'dim': 1024,
+        }
         transformer_args = {**transformer_args, **dict(cfg.MODEL.VAREN_HEAD.TRANSFORMER_DECODER)}
 
         self.transformer = TransformerDecoder(**transformer_args)

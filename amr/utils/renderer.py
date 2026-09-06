@@ -2,13 +2,13 @@ import os
 
 if 'PYOPENGL_PLATFORM' not in os.environ:
     os.environ['PYOPENGL_PLATFORM'] = 'egl'
-import torch
+
+import cv2
 import numpy as np
 import pyrender
+import torch
 import trimesh
-import cv2
 from yacs.config import CfgNode
-from typing import List, Optional
 
 
 def cam_crop_to_full(cam_bbox, box_center, box_size, img_size, focal_length=5000.):
@@ -108,7 +108,7 @@ def rotz(theta):
     )
 
 
-def create_raymond_lights() -> List[pyrender.Node]:
+def create_raymond_lights() -> list[pyrender.Node]:
     """
     Return raymond light nodes for the scene.
     """
@@ -161,7 +161,7 @@ class Renderer:
                  camera_translation: np.array,
                  image: torch.Tensor,
                  full_frame: bool = False,
-                 imgname: Optional[str] = None,
+                 imgname: str | None = None,
                  side_view=False, rot_angle=90,
                  mesh_base_color=(1.0, 1.0, 0.9),
                  scene_bg_color=(0, 0, 0),
@@ -219,7 +219,7 @@ class Renderer:
         for node in light_nodes:
             scene.add_node(node)
 
-        color, rend_depth = renderer.render(scene, flags=pyrender.RenderFlags.RGBA)
+        color, _rend_depth = renderer.render(scene, flags=pyrender.RenderFlags.RGBA)
         color = color.astype(np.float32) / 255.0
         renderer.delete()
 
@@ -268,7 +268,6 @@ class Renderer:
             render_res=[256, 256],
             focal_length=None,
     ):
-
         renderer = pyrender.OffscreenRenderer(viewport_width=render_res[0],
                                               viewport_height=render_res[1],
                                               point_size=1.0)
@@ -310,7 +309,7 @@ class Renderer:
         for node in light_nodes:
             scene.add_node(node)
 
-        color, rend_depth = renderer.render(scene, flags=pyrender.RenderFlags.RGBA)
+        color, _rend_depth = renderer.render(scene, flags=pyrender.RenderFlags.RGBA)
         color = color.astype(np.float32) / 255.0
         renderer.delete()
 
@@ -318,8 +317,8 @@ class Renderer:
 
     def render_rgba_multiple(
             self,
-            vertices: List[np.array],
-            cam_t: List[np.array],
+            vertices: list[np.array],
+            cam_t: list[np.array],
             rot_axis=[1, 0, 0],
             rot_angle=0,
             mesh_base_color=(1.0, 1.0, 0.9),
@@ -362,14 +361,16 @@ class Renderer:
         for node in light_nodes:
             scene.add_node(node)
 
-        color, rend_depth = renderer.render(scene, flags=pyrender.RenderFlags.RGBA)
+        color, _rend_depth = renderer.render(scene, flags=pyrender.RenderFlags.RGBA)
         color = color.astype(np.float32) / 255.0
         renderer.delete()
 
         return color
 
-    def add_lighting(self, scene, cam_node, color=np.ones(3), intensity=1.0):
+    def add_lighting(self, scene, cam_node, color=None, intensity=1.0):
         # from phalp.visualize.py_renderer import get_light_poses
+        if color is None:
+            color = np.ones(3)
         light_poses = get_light_poses()
         light_poses.append(np.eye(4))
         cam_pose = scene.get_pose(cam_node)
@@ -384,7 +385,9 @@ class Renderer:
                 continue
             scene.add_node(node)
 
-    def add_point_lighting(self, scene, cam_node, color=np.ones(3), intensity=1.0):
+    def add_point_lighting(self, scene, cam_node, color=None, intensity=1.0):
+        if color is None:
+            color = np.ones(3)
         # from phalp.visualize.py_renderer import get_light_poses
         light_poses = get_light_poses(dist=0.5)
         light_poses.append(np.eye(4))

@@ -1,12 +1,9 @@
-import torch
-import torch.nn as nn
-import numpy as np
 import pickle
-from pytorch3d.renderer import RasterizationSettings, MeshRenderer, MeshRasterizer, SoftSilhouetteShader, BlendParams
-from pytorch3d.structures import Meshes
-from pytorch3d.renderer import PerspectiveCameras
+
+import numpy as np
+import torch
 from pytorch3d.transforms import matrix_to_axis_angle
-import torch.nn.functional as F
+from torch import nn
 
 
 class Keypoint2DLoss(nn.Module):
@@ -17,7 +14,7 @@ class Keypoint2DLoss(nn.Module):
         Args:
             loss_type (str): Choose between l1 and l2 losses.
         """
-        super(Keypoint2DLoss, self).__init__()
+        super().__init__()
         if loss_type == 'l1':
             self.loss_fn = nn.L1Loss(reduction='none')
         elif loss_type == 'l2':
@@ -35,7 +32,6 @@ class Keypoint2DLoss(nn.Module):
             torch.Tensor: 2D keypoint loss.
         """
         conf = gt_keypoints_2d[:, :, -1].unsqueeze(-1).clone()
-        batch_size = conf.shape[0]
         loss = (conf * self.loss_fn(pred_keypoints_2d, gt_keypoints_2d[:, :, :-1])).sum(dim=(1, 2))
         return loss.sum()
 
@@ -48,7 +44,7 @@ class Keypoint3DLoss(nn.Module):
         Args:
             loss_type (str): Choose between l1 and l2 losses.
         """
-        super(Keypoint3DLoss, self).__init__()
+        super().__init__()
         if loss_type == 'l1':
             self.loss_fn = nn.L1Loss(reduction='none')
         elif loss_type == 'l2':
@@ -65,7 +61,6 @@ class Keypoint3DLoss(nn.Module):
         Returns:
             torch.Tensor: 3D keypoint loss.
         """
-        batch_size = pred_keypoints_3d.shape[0]
         gt_keypoints_3d = gt_keypoints_3d.clone()
         pred_keypoints_3d = pred_keypoints_3d - pred_keypoints_3d[:, pelvis_id, :].unsqueeze(dim=1)
         gt_keypoints_3d[:, :, :-1] = gt_keypoints_3d[:, :, :-1] - gt_keypoints_3d[:, pelvis_id, :-1].unsqueeze(dim=1)
@@ -81,7 +76,7 @@ class ParameterLoss(nn.Module):
         """
         SMAL parameter loss module.
         """
-        super(ParameterLoss, self).__init__()
+        super().__init__()
         self.loss_fn = nn.MSELoss(reduction='none')
 
     def forward(self, pred_param: torch.Tensor, gt_param: torch.Tensor, has_param: torch.Tensor):
@@ -104,7 +99,7 @@ class ParameterLoss(nn.Module):
 
 class PosePriorLoss(nn.Module):
     def __init__(self, path_prior):
-        super(PosePriorLoss, self).__init__()
+        super().__init__()
         with open(path_prior, "rb") as f:
             data_prior = pickle.load(f, encoding="latin1")
 
@@ -135,7 +130,7 @@ class PosePriorLoss(nn.Module):
 
 class ShapePriorLoss(nn.Module):
     def __init__(self, path_prior):
-        super(ShapePriorLoss, self).__init__()
+        super().__init__()
         with open(path_prior, "rb") as f:
             data_prior = pickle.load(f, encoding="latin1")
 
@@ -174,7 +169,7 @@ class SupConLoss(nn.Module):
     It also supports the unsupervised contrastive loss in SimCLR"""
     def __init__(self, temperature=0.1, contrast_mode='all',
                  base_temperature=0.07):
-        super(SupConLoss, self).__init__()
+        super().__init__()
         self.temperature = temperature
         self.contrast_mode = contrast_mode
         self.base_temperature = base_temperature
@@ -223,7 +218,7 @@ class SupConLoss(nn.Module):
             anchor_feature = contrast_feature
             anchor_count = contrast_count
         else:
-            raise ValueError('Unknown mode: {}'.format(self.contrast_mode))
+            raise ValueError(f'Unknown mode: {self.contrast_mode}')
 
         # compute logits
         anchor_dot_contrast = torch.div(
@@ -268,7 +263,7 @@ class SupConLoss(nn.Module):
 
 class PoseBonePriorLoss(nn.Module):
     def __init__(self, path_prior, loss_type='l2'):
-        super(PoseBonePriorLoss, self).__init__()
+        super().__init__()
         self.loss_type = loss_type
 
         data_prior = torch.load(path_prior, weights_only=True)
@@ -326,7 +321,7 @@ class SilhouetteLoss(nn.Module):
         Args:
             loss_type (str): Choose between l1 and l2 losses.
         """
-        super(SilhouetteLoss, self).__init__()
+        super().__init__()
         self.loss_fn = nn.MSELoss(reduction='none')
 
     def forward(self, pred_silhouette: torch.Tensor, gt_silhouette: torch.Tensor) -> torch.Tensor:

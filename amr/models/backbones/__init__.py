@@ -1,6 +1,5 @@
 from .vit_moe import vithmoe
-from torch import nn
-import torchvision
+
 
 def create_backbone(cfg):
     if cfg.MODEL.BACKBONE.TYPE == 'vithmoe':

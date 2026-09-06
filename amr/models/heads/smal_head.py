@@ -1,10 +1,9 @@
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import numpy as np
+
 import einops
-import pickle as pkl
-from ...utils.geometry import rot6d_to_rotmat, aa_to_rotmat
+import torch
+from torch import nn
+
+from ...utils.geometry import aa_to_rotmat, rot6d_to_rotmat
 from ..components.pose_transformer import TransformerDecoder
 
 
@@ -13,7 +12,7 @@ def build_smal_head(cfg):
     if smal_head_type == 'transformer_decoder':
         return SMALTransformerDecoderHead(cfg)
     else:
-        raise ValueError('Unknown SMAL head type: {}'.format(smal_head_type))
+        raise ValueError(f'Unknown SMAL head type: {smal_head_type}')
 
 
 class SMALTransformerDecoderHead(nn.Module):
@@ -27,11 +26,11 @@ class SMALTransformerDecoderHead(nn.Module):
         npose = self.joint_rep_dim * (cfg.SMAL.NUM_JOINTS + 1)
         self.npose = npose
         self.input_is_mean_shape = cfg.MODEL.SMAL_HEAD.get('TRANSFORMER_INPUT', 'zero') == 'mean_shape'
-        transformer_args = dict(
-            num_tokens=1,
-            token_dim=(npose + 10 + 3) if self.input_is_mean_shape else 1,
-            dim=1024,
-        )
+        transformer_args = {
+            'num_tokens': 1,
+            'token_dim': (npose + 10 + 3) if self.input_is_mean_shape else 1,
+            'dim': 1024,
+        }
         transformer_args = {**transformer_args, **dict(cfg.MODEL.SMAL_HEAD.TRANSFORMER_DECODER)}
         
         self.transformer = TransformerDecoder(

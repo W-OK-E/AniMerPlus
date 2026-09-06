@@ -1,7 +1,7 @@
-import torch
+
 import numpy as np
 import open3d as o3d
-from typing import Dict, List, Union
+import torch
 from pytorch3d.transforms import axis_angle_to_matrix
 
 from amr.models.animerpp import _varen_native_to_camera_frame
@@ -113,7 +113,7 @@ class Evaluator:
         self.image_size = image_size
         self.model_type = model_type
     
-    def compute_pck(self, output: Dict, batch: Dict, pck_threshold: Union[List, None]):
+    def compute_pck(self, output: dict, batch: dict, pck_threshold: list | None):
         pred_keypoints_2d = output['pred_keypoints_2d'].detach().cpu()
         gt_keypoints_2d = batch['keypoints_2d'].detach().cpu()
         self.pck_threshold_list = []
@@ -147,7 +147,7 @@ class Evaluator:
         pa_mpvpe = torch.sqrt(((S1_hat - gt_vertices) ** 2).sum(dim=-1)).mean(dim=-1).cpu().numpy() * 1000
         return pa_mpvpe.mean()
 
-    def eval_3d(self, output: Dict, batch: Dict):
+    def eval_3d(self, output: dict, batch: dict):
         """
         Evaluate current batch
         Args:
@@ -179,12 +179,12 @@ class Evaluator:
         pa_mpvpe = self.compute_pa_mpvpe(gt_vertices, output['pred_vertices'])
         return pa_mpjpe, pa_mpvpe
     
-    def eval_2d(self, output: Dict, batch: Dict, pck_threshold: List[float]=[0.10, 0.15]):
+    def eval_2d(self, output: dict, batch: dict, pck_threshold: list[float]=[0.10, 0.15]):
         pck = self.compute_pck(output, batch, pck_threshold=pck_threshold)
         auc = self.compute_auc(batch, output)
         return pck.tolist(), auc
     
-    def compute_auc(self, batch: Dict, output: Dict, threshold_min: int=0.0, threshold_max: int=1.0, steps: int=100):
+    def compute_auc(self, batch: dict, output: dict, threshold_min: int=0.0, threshold_max: int=1.0, steps: int=100):
         thresholds = np.linspace(threshold_min, threshold_max, steps)
         norm_factor = np.trapz(np.ones_like(thresholds), thresholds)
         pck_curve = []
@@ -195,7 +195,7 @@ class Evaluator:
         auc /= norm_factor
         return auc
 
-    def smal_forward(self, batch: Dict):
+    def smal_forward(self, batch: dict):
         batch_size = batch['img'].shape[0]
         smal_params = batch['smal_params']
         smal_params['global_orient'] = axis_angle_to_matrix(smal_params['global_orient'].reshape(batch_size, -1)).unsqueeze(1)
@@ -206,7 +206,7 @@ class Evaluator:
         vertices = smal_output.vertices
         return vertices
 
-    def varen_forward(self, batch: Dict):
+    def varen_forward(self, batch: dict):
         """
         Regress GT vertices from the VAREN ground-truth params stored under
         batch['varen_params'] (see amr/datasets/varen_dataset.py). Unlike

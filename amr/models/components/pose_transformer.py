@@ -1,5 +1,5 @@
+from collections.abc import Callable
 from inspect import isfunction
-from typing import Callable, Optional
 
 import torch
 from einops import rearrange
@@ -11,6 +11,7 @@ from .t_cond_mlp import (
     FrequencyEmbedder,
     normalization_layer,
 )
+
 # from .vit import Attention, FeedForward
 
 
@@ -168,7 +169,7 @@ class TransformerCrossAttn(nn.Module):
         dropout: float = 0.0,
         norm: str = "layer",
         norm_cond_dim: int = -1,
-        context_dim: Optional[int] = None,
+        context_dim: int | None = None,
     ):
         super().__init__()
         self.layers = nn.ModuleList([])
@@ -206,7 +207,7 @@ class DropTokenDropout(nn.Module):
         super().__init__()
         if p < 0 or p > 1:
             raise ValueError(
-                "dropout probability has to be between 0 and 1, " "but got {}".format(p)
+                "dropout probability has to be between 0 and 1, " f"but got {p}"
             )
         self.p = p
 
@@ -225,7 +226,7 @@ class ZeroTokenDropout(nn.Module):
         super().__init__()
         if p < 0 or p > 1:
             raise ValueError(
-                "dropout probability has to be between 0 and 1, " "but got {}".format(p)
+                "dropout probability has to be between 0 and 1, " f"but got {p}"
             )
         self.p = p
 
@@ -313,7 +314,7 @@ class TransformerDecoder(nn.Module):
         emb_dropout_type: str = 'drop',
         norm: str = "layer",
         norm_cond_dim: int = -1,
-        context_dim: Optional[int] = None,
+        context_dim: int | None = None,
         skip_token_embedding: bool = False,
     ):
         super().__init__()

@@ -1,21 +1,24 @@
-from pathlib import Path
-import detectron2.config
-import detectron2.engine
-import torch
 import argparse
 import os
+import warnings
+from pathlib import Path
+
 import cv2
+import detectron2
+import detectron2.config
+import detectron2.engine
 import numpy as np
-from tqdm import tqdm
+import torch
 import torch.utils
 import torch.utils.data
+from amr.datasets.vitdet_dataset import DEFAULT_MEAN, DEFAULT_STD, ViTDetDataset
+from detectron2 import model_zoo
+from tqdm import tqdm
+
 from amr.models import load_amr
 from amr.utils import recursive_to
-from amr.datasets.vitdet_dataset import ViTDetDataset, DEFAULT_MEAN, DEFAULT_STD
 from amr.utils.renderer import Renderer, cam_crop_to_full
-import detectron2
-from detectron2 import model_zoo
-import warnings
+
 warnings.filterwarnings("ignore")
 
 LIGHT_BLUE = (0.65098039, 0.74117647, 0.85882353)
@@ -149,6 +152,8 @@ def main():
                     tmesh = renderer.vertices_to_trimesh(verts, camera_translation, LIGHT_BLUE)
                     tmesh.export(os.path.join(args.out_folder, f'{img_fn}_{animal_id}.obj'))
 
-
+    end = time.time()
+    print(f"Total processing time: {end - start:.2f} seconds")
+    
 if __name__ == '__main__':
     main()

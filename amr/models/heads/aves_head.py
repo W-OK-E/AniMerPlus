@@ -1,8 +1,9 @@
-import torch.nn as nn
-import torch
 import einops
+import torch
 from pytorch3d.transforms import axis_angle_to_matrix, matrix_to_rotation_6d
-from ...utils.geometry import rot6d_to_rotmat, aa_to_rotmat
+from torch import nn
+
+from ...utils.geometry import aa_to_rotmat, rot6d_to_rotmat
 from ..components.pose_transformer import TransformerDecoder
 
 
@@ -13,7 +14,7 @@ def build_aves_head(cfg):
     elif aves_head_type == 'mlp_decoder':
         return ThetaRegressor(cfg)
     else:
-        raise ValueError('Unknown AVES head type: {}'.format(aves_head_type))
+        raise ValueError(f'Unknown AVES head type: {aves_head_type}')
 
 
 class LinearModel(nn.Module):
@@ -25,7 +26,7 @@ class LinearModel(nn.Module):
         use_ac_func: a list of bool define use active function or not, such as [True, True, False]
     '''
     def __init__(self, fc_layers, dropout, use_ac_func):
-        super(LinearModel, self).__init__()
+        super().__init__()
         self.fc_layers = fc_layers
         self.drop_prob = dropout
         self.use_ac_func = use_ac_func
@@ -40,19 +41,19 @@ class LinearModel(nn.Module):
         
         for _ in range(l_fc_layer - 1):
             self.fc_blocks.add_module(
-                name = 'regressor_fc_{}'.format(_),
+                name = f'regressor_fc_{_}',
                 module = nn.Linear(in_features = self.fc_layers[_], out_features = self.fc_layers[_ + 1])
             )
             
             if _ < l_use_ac_func and self.use_ac_func[_]:
                 self.fc_blocks.add_module(
-                    name = 'regressor_af_{}'.format(_),
+                    name = f'regressor_af_{_}',
                     module = nn.ReLU()
                 )
             
             if _ < l_drop_porb and self.drop_prob[_]:
                 self.fc_blocks.add_module(
-                    name = 'regressor_fc_dropout_{}'.format(_),
+                    name = f'regressor_fc_dropout_{_}',
                     module = nn.Dropout(p=self.drop_prob[_])
                 )
 
@@ -70,7 +71,7 @@ class ThetaRegressor(LinearModel):
         self.npose = npose
 
         mlp_args = cfg.MODEL.AVES_HEAD.MLP_DECODER
-        super(ThetaRegressor, self).__init__(**mlp_args)
+        super().__init__(**mlp_args)
 
         init_cam = torch.tensor([[0.15, 0, 0]], dtype=torch.float32)
         init_pose = torch.zeros(size=(1, npose), dtype=torch.float32)
@@ -105,7 +106,7 @@ class ThetaRegressor(LinearModel):
                             'bone': pred_bone,
                             }
         thetas = [torch.split(theta, [3, self.npose, 24, 15], dim=1) for theta in thetas]
-        pred_aves_params_list = dict()
+        pred_aves_params_list = {}
         pred_aves_params_list['pose'] = torch.cat(
             [joint_conversion_fn(pbp[1]).view(batch_size, -1, 3, 3)[:, 1:, :, :] for pbp in thetas], dim=0)
         pred_aves_params_list['bone'] = torch.cat([pbp[2] for pbp in thetas], dim=0)
@@ -124,11 +125,11 @@ class AVESTransformerDecoderHead(nn.Module):
         npose = self.joint_rep_dim * (cfg.AVES.NUM_JOINTS + 1)
         self.npose = npose
         self.input_is_mean_shape = cfg.MODEL.AVES_HEAD.get('TRANSFORMER_INPUT', 'zero') == 'mean_shape'
-        transformer_args = dict(
-            num_tokens=1,
-            token_dim=(npose + 10 + 3) if self.input_is_mean_shape else 1,
-            dim=1024,
-        )
+        transformer_args = {
+            'num_tokens': 1,
+            'token_dim': (npose + 10 + 3) if self.input_is_mean_shape else 1,
+            'dim': 1024,
+        }
         transformer_args = {**transformer_args, **dict(cfg.MODEL.AVES_HEAD.TRANSFORMER_DECODER)}
         
         self.transformer = TransformerDecoder(

@@ -1,17 +1,17 @@
-import torch
+
 import pytorch_lightning as pl
+import torch
 from torchvision.utils import make_grid
-from typing import Dict
 from yacs.config import CfgNode
+
 from ..utils import MeshRenderer
-from ..utils.geometry import perspective_projection, aa_to_rotmat
+from ..utils.geometry import aa_to_rotmat, perspective_projection
 from ..utils.pylogger import get_pylogger
 from .backbones import create_backbone
-from .heads.classifier_head import ClassTokenHead
 from .heads import build_varen_head
-from .losses import (Keypoint3DLoss, Keypoint2DLoss, ParameterLoss, SupConLoss)
-from .varen_warapper import VAREN
-
+from .heads.classifier_head import ClassTokenHead
+from .losses import Keypoint2DLoss, Keypoint3DLoss, ParameterLoss, SupConLoss
+from .varen_wrapper import VAREN
 
 log = get_pylogger(__name__)
 #Camera scale bounds for when using weak perspective projection.
@@ -107,10 +107,12 @@ class AniMerPlusPlus(pl.LightningModule):
             # block 0, same as _freeze_stages' own convention.
             import re
             block_re = re.compile(r'blocks\.(\d+)\.')
-            by_mult: Dict[float, list] = {}
+            by_mult: dict[float, list] = {}
+            trainable_param = []
             for name, p in self.backbone.named_parameters():
                 if not p.requires_grad:
                     continue
+                trainable_param.append(name)
                 m = block_re.match(name)
                 block_idx = int(m.group(1)) if m else 0
                 lr_mult = 1.0
@@ -119,12 +121,16 @@ class AniMerPlusPlus(pl.LightningModule):
                         lr_mult = group['lr_mult']
                         break
                 by_mult.setdefault(lr_mult, []).append(p)
+
             param_groups = [{'params': params, 'lr': base_lr * lr_mult} for lr_mult, params in by_mult.items()]
             head_params = list(self.varen_head.parameters()) + list(self.class_token_head.parameters())
             param_groups.append({'params': filter(lambda p: p.requires_grad, head_params), 'lr': base_lr})
         else:
             param_groups = [{'params': filter(lambda p: p.requires_grad, self.get_parameters()), 'lr': base_lr}]
 
+        if(len(trainable_param) > 1):
+            for p in trainable_param:
+                print(p)
         if "vit" in self.cfg.MODEL.BACKBONE.TYPE:
             optimizer = torch.optim.AdamW(params=param_groups,
                                           weight_decay=self.cfg.TRAIN.WEIGHT_DECAY)
@@ -141,7 +147,7 @@ class AniMerPlusPlus(pl.LightningModule):
         scheduler = torch.optim.lr_scheduler.SequentialLR(optimizer, schedulers=[warmup, cosine], milestones=[warmup_steps])
         return [optimizer], [scheduler]
 
-    def forward_backbone(self, batch: Dict):
+    def forward_backbone(self, batch: dict):
         x = batch['img']
         dataset_source = (batch.get("supercategory", None) < 5) if batch.get("supercategory", None) is not None else None
         # Compute conditioning features using the backbone
@@ -225,7 +231,7 @@ class AniMerPlusPlus(pl.LightningModule):
         output['pred_keypoints_2d'] = pred_keypoints_2d.reshape(batch_size, -1, 2)
         return output
 
-    def forward_step(self, batch: Dict, train: bool = False) -> Dict:
+    def forward_step(self, batch: dict, train: bool = False) -> dict:
         """
         Run a forward step of the network
         Args:
@@ -236,8 +242,6 @@ class AniMerPlusPlus(pl.LightningModule):
         """
         # Use RGB image as input
         x = batch['img']
-        batch_size = x.shape[0]
-        device = x.device
         features, cls = self.forward_backbone(batch)
 
         output = dict()
@@ -249,7 +253,7 @@ class AniMerPlusPlus(pl.LightningModule):
                                                                    self.varen)
         return output
 
-    def compute_varen_loss(self, batch: Dict, output: Dict) -> torch.Tensor:
+    def compute_varen_loss(self, batch: dict, output: dict) -> torch.Tensor:
         """
         Compute VAREN losses given the input batch and the regression output.
         Args:
@@ -317,7 +321,7 @@ class AniMerPlusPlus(pl.LightningModule):
         return loss, losses
 
 
-    def compute_loss(self, batch: Dict, output: Dict, train: bool = True) -> torch.Tensor:
+    def compute_loss(self, batch: dict, output: dict, train: bool = True) -> torch.Tensor:
         """
         Compute losses given the input batch and the regression output
         Args:
@@ -348,7 +352,7 @@ class AniMerPlusPlus(pl.LightningModule):
 
     # Tensoroboard logging should run from first rank only
     @pl.utilities.rank_zero.rank_zero_only
-    def tensorboard_logging(self, batch: Dict, output: Dict, step_count: int, train: bool = True,
+    def tensorboard_logging(self, batch: dict, output: dict, step_count: int, train: bool = True,
                             write_to_summary_writer: bool = True) -> None:
         """
         Log results to Tensorboard
@@ -380,7 +384,6 @@ class AniMerPlusPlus(pl.LightningModule):
         
         rend_imgs = []
         num_images = min(batch_size, self.cfg.EXTRA.NUM_LOG_IMAGES)
-        dataset_source = (batch["supercategory"] < 5)[:num_images]  # bird for index 0
 
         if 'varen_output' in output:
             rend_imgs_varen = self.varen_mesh_renderer.visualize_tensorboard(
@@ -397,11 +400,11 @@ class AniMerPlusPlus(pl.LightningModule):
 
         rend_imgs = make_grid(rend_imgs, nrow=5, padding=2)
         if write_to_summary_writer:
-            summary_writer.add_image('%s/predictions' % mode, rend_imgs, step_count)
+            summary_writer.add_image(f'{mode}/predictions', rend_imgs, step_count)
 
         return rend_imgs
 
-    def forward(self, batch: Dict) -> Dict:
+    def forward(self, batch: dict) -> dict:
         """
         Run a forward step of the network in val mode
         Args:
@@ -411,7 +414,7 @@ class AniMerPlusPlus(pl.LightningModule):
         """
         return self.forward_step(batch, train=False)
 
-    def training_step(self, batch: Dict) -> Dict:
+    def training_step(self, batch: dict) -> dict:
         """
         Run a full training step
         Args:
@@ -450,5 +453,5 @@ class AniMerPlusPlus(pl.LightningModule):
 
         return output
 
-    def validation_step(self, batch: Dict, batch_idx: int, dataloader_idx=0) -> Dict:
+    def validation_step(self, batch: dict, batch_idx: int, dataloader_idx=0) -> dict:
         pass
