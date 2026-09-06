@@ -1,56 +1,6 @@
 #!/usr/bin/env python
 """
-Overfit-a-tiny-batch check for the camera-scale fix (2026-08-25 debugging session).
-
-Same "can it memorize a handful of real samples" technique as
-verify_orientation_with_vit.py, but:
-  - matches real training's backbone config (run.sh's
-    MODEL.BACKBONE.FREEZE_ATTN/FREEZE_FFN/FROZEN_STAGES/USE_CLS + the real
-    pretrained checkpoint), which verify_orientation_with_vit.py's own
-    build_cfg() does not apply. Defaults now match run.sh's full-unfreeze +
-    discriminative-LR setup (FREEZE_ATTN/FREEZE_FFN=false, FROZEN_STAGES=-1 --
-    nothing frozen; TRAIN.BACKBONE_LR_GROUPS in AniMerPlus.yaml governs the
-    effective per-block LR instead -- blocks <=10 at 0.01x, <=25 at 0.1x, 26+
-    and the heads at the full LR); override via --freeze-attn/--freeze-ffn/
-    --frozen-stages, e.g. pass --freeze-attn true --freeze-ffn true to go back
-    to the fully-frozen backbone if it OOMs a 12GB card.
-  - spreads sample selection across the whole dataset (not just the first N),
-    and skips samples whose image/mask files aren't present locally.
-  - disables cuDNN (this machine's GPU/cuDNN combo raises "GET was unable to
-    find an engine" on plain nn.Conv2d otherwise -- same issue
-    smoke_test_varen.py works around via AMR_DISABLE_CUDNN).
-  - prints the per-component loss breakdown and pred_cam_t's z-component
-    (camera depth) every --log-every steps, and a per-sample final summary
-    (2D pixel error + final camera depth) at the end.
-  - renders by default (per sample: input image | mesh front | mesh side |
-    pred 2D keypoints | GT 2D keypoints), reusing the exact same
-    AniMerPlusPlus.tensorboard_logging / MeshRenderer.visualize_tensorboard
-    call the real training loop logs to TensorBoard with.
-  - saves a checkpoint (model+optimizer state) every --checkpoint-every steps
-    (default: same as --log-every) to --checkpoint-dir, each paired with a
-    render snapshot on the training batch at that step (step_NNNNNN.pt +
-    step_NNNNNN_render.png) -- so you can watch alignment evolve over the run,
-    not just see the final result. Pass --checkpoint-every 0 to disable.
-  - can resume from one of those checkpoints via --resume-from
-    checkpoint_dir/step_NNNNNN.pt -- --steps is the TARGET total, so resuming
-    a step-300 checkpoint with --steps 800 runs 500 more steps, not 800 more.
-    Must use the same sample/model config it was saved with.
-  - for each HOLDOUT sample (the final val-set-style check), also saves pred +
-    GT VAREN params as JSON in the exact same flat schema as
-    VAREN/examples/example_params.json (global_orient/pose/betas, axis-angle)
-    to --params-out-dir, so they can be loaded and compared independently in
-    trimesh/blender -- and (if --render) a semi-transparent wireframe overlay
-    PNG per sample, which shows alignment more precisely than the solid-shaded
-    mesh in the main grid render.
-
-The fix itself (amr/models/animerpp.py, forward_one_parametric_model): the
-predicted camera scale used to be used raw as a divisor
-(2*focal/(IMAGE_SIZE*pred_cam[:,0]+1e-9)), with no positivity constraint --
-it could cross zero, flipping the camera to a negative depth, or blow up
-unboundedly. Now it's passed through softplus first so it can't reach zero or
-go negative. Pass --disable-fix to temporarily monkeypatch the OLD unconstrained
-formula back in for a side-by-side comparison (does not touch the file on disk).
-
+Overfit-a-tiny-batch for sanity check
 Usage:
     python scripts/test_camera_scale_overfit.py [--num-samples 10] [--steps 800]
         [--lr 1e-4] [--log-every 50] [--device cuda] [--disable-fix]

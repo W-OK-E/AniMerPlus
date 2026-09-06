@@ -1,22 +1,4 @@
 #!/usr/bin/env bash
-#
-# test_camera_scale_overfit.sh -- overfit-a-tiny-batch check for the
-# camera-scale fix applied to amr/models/animerpp.py on 2026-08-25 (predicted
-# camera scale now goes through softplus so it can't cross zero / blow up
-# unboundedly as a divisor). See scripts/test_camera_scale_overfit.py's
-# docstring for full context and what each field in the output means.
-#
-# Unlike verify_orientation_with_vit.sh, this also applies the backbone
-# overrides real training uses (run.sh's FREEZE_ATTN/FREEZE_FFN/FROZEN_STAGES/
-# USE_CLS) -- defaults now match run.sh's full-unfreeze + discriminative-LR
-# setup (FREEZE_ATTN/FREEZE_FFN=false, FROZEN_STAGES=-1: nothing frozen,
-# TRAIN.BACKBONE_LR_GROUPS in AniMerPlus.yaml governs the effective per-block
-# LR instead -- blocks <=10 at 0.01x, <=25 at 0.1x, 26+ and the heads at the
-# full LR). Pass --freeze-attn true --freeze-ffn true to go back to the
-# fully-frozen backbone if it OOMs a 12GB card.
-#
-# Runs in the animer2 micromamba env automatically.
-#
 # USAGE:
 #   scripts/test_camera_scale_overfit.sh [options]
 #
@@ -56,18 +38,7 @@
 #
 # EXAMPLES:
 #   # Reproduce the passing "with fix" run from the debugging session:
-#   scripts/test_camera_scale_overfit.sh
-#
-#   # Reproduce the pre-fix baseline for comparison:
-#   scripts/test_camera_scale_overfit.sh --disable-fix -o baseline_render.png
-#
-#   # Same samples/seed as the second ("does it reproduce") confirmation run:
-#   scripts/test_camera_scale_overfit.sh --seed 1234 --sample-offset 0.5
-
-# As per the current configuration, we just need to run:
 # bash scripts/test_camera_scale_overfit.sh --seed 1234 --sample-offset 0.5 --freeze-attn false --freeze-ffn false --frozen-stages -1
-#
-#
 
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

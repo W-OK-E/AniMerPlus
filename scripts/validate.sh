@@ -1,13 +1,4 @@
 #!/usr/bin/env bash
-#
-# validate.sh -- friendly wrapper around eval.py for evaluating a trained
-# AniMerPlusPlus checkpoint.
-#
-# eval.py is a plain argparse script (not Hydra) that loads a *resolved*
-# config snapshot (e.g. <output_dir>/.hydra/config.yaml, written automatically
-# by a training run started via scripts/train.sh / main.py) and a checkpoint,
-# then runs the configured Evaluator over one or more datasets.
-#
 # USAGE:
 #   scripts/validate.sh -c CONFIG -k CHECKPOINT [options]
 #

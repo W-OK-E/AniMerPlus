@@ -1,12 +1,4 @@
 #!/usr/bin/env bash
-#
-# train.sh -- friendly wrapper around main.py (Hydra) for training AniMerPlusPlus.
-#
-# main.py is a Hydra entry point: `python main.py exp_name=... experiment=... trainer=gpu launcher=local`.
-# This script exists so you don't need to know Hydra's override syntax to run
-# a standard training job; anything you *do* know Hydra syntax for can still
-# be passed through via EXTRA_ARGS / trailing arguments.
-#
 # USAGE:
 #   scripts/train.sh [options] [-- extra Hydra overrides]
 #
