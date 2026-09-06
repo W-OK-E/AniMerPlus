@@ -1,10 +1,6 @@
 # @package _global_
 
 DATASETS:
-  ANIMAL3D:
-    ROOT_IMAGE: /path/to/animal3d/
-    JSON_FILE:
-      TEST: /path/to/animal3d/test.json
   HORSE:
     ROOT_IMAGE: /path/to/horse/
     JSON_FILE:

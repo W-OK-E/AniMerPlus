@@ -15,26 +15,6 @@ GENERAL:
   PREFETCH_FACTOR: 2
 
 LOSS_WEIGHTS:
-  AVES:
-    KEYPOINTS_3D: 0.05
-    KEYPOINTS_2D: 0.01
-    GLOBAL_ORIENT: 0.001
-    POSE: 0.001
-    BETAS: 0.0005
-    BONE: 0.002
-    ADVERSARIAL: 0.
-    MASK: 0.02
-    POSE_RE: 0.05
-    BETAS_RE: 0.001
-    BONE_RE: 0.1
-  SMAL: 
-    KEYPOINTS_3D: 0.05
-    KEYPOINTS_2D: 0.01
-    GLOBAL_ORIENT: 0.001
-    POSE: 0.001
-    BETAS: 0.0005
-    ADVERSARIAL: 0
-    MASK: 0.0
   VAREN:
     KEYPOINTS_3D: 0.05
     KEYPOINTS_2D: 0.05  
@@ -70,32 +50,6 @@ MODEL:
     FROZEN_STAGES: -1     # -1 = nothing frozen; N = freeze patch_embed + blocks[1..N] (block 0 stays trainable)
     FREEZE_ATTN: false    # freeze every block's attention + its preceding norm1, all 32 blocks
     FREEZE_FFN: false     # freeze patch_embed, pos_embed, and every block's MLP + its preceding norm2
-  AVES_HEAD:
-    TYPE: transformer_decoder
-    IN_CHANNELS: 2048
-    IEF_ITERS: 1
-    TRANSFORMER_DECODER:
-      depth: 6
-      heads: 8
-      mlp_dim: 1024
-      dim_head: 64
-      dropout: 0.0
-      emb_dropout: 0.0
-      norm: layer
-      context_dim: 1280
-  SMAL_HEAD:
-    TYPE: transformer_decoder
-    IN_CHANNELS: 2048
-    IEF_ITERS: 1
-    TRANSFORMER_DECODER:
-      depth: 6
-      heads: 8
-      mlp_dim: 1024
-      dim_head: 64
-      dropout: 0.0
-      emb_dropout: 0.0
-      norm: layer
-      context_dim: 1280
   VAREN_HEAD:
     TYPE: transformer_decoder
     IN_CHANNELS: 2048
@@ -122,45 +76,12 @@ MODEL:
     last_bn: true
 
 DATASETS:
-  CUB:
-    ROOT_IMAGE: path/to/CUB
-    ANNOTATIONS: 
-      TRAIN: path/to/train.mat
-      TEST: path/to/test.mat
-    JSON_FILE:
-      TEST: path/to/test.json
-    WEIGHT: 0.45
-  ANIMAL3D:
-    ROOT_IMAGE: path/to/animal3d
-    JSON_FILE:
-      TRAIN: path/to/train.json
-      TEST: path/to/test.json
-    WEIGHT: 1
-  CTRLAVES3D:
-    ROOT_IMAGE: path/to/ctrlaves3d
-    JSON_FILE:
-      TRAIN: path/to/train.json
-      TEST: path/to/test.json
-    WEIGHT: 1
   HORSE:
     ROOT_IMAGE: path/to/horse
     JSON_FILE:
       TRAIN: path/to/horse/train.json
       TEST: path/to/horse/test.json
     WEIGHT: 0
-
-AVES:
-  FOCAL_LENGTH: 2167
-  MODEL_PATH: data/aves/aves_high_res.pt
-  POSE_PRIOR_PATH: data/aves/aves_high_res.pt
-  NUM_JOINTS: 24
-
-SMAL:
-  FOCAL_LENGTH: 1000
-  MODEL_PATH: data/smal/my_smpl_00781_4_all.pkl
-  SHAPE_PRIOR_PATH: data/smal/my_smpl_data_00781_4_all.pkl
-  POSE_PRIOR_PATH: data/smal/walking_toy_symmetric_pose_prior_with_cov_35parts.pkl
-  NUM_JOINTS: 34
 
 VAREN:
   FOCAL_LENGTH: 5000
