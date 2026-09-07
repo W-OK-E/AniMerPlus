@@ -7,7 +7,11 @@ Usage:
         [--render-out camera_scale_overfit_render.png] [--no-render]
         [--checkpoint-dir camera_scale_overfit_checkpoints] [--checkpoint-every 50]
         [--resume-from PATH] [--freeze-attn false] [--freeze-ffn false] [--frozen-stages -1]
+        [--batch-size 8] [--loss-plot-dir camera_scale_overfit_losses] [--loss-smooth-window 25]
         [--json-file ...] [--root-image ...] [--varen-model-path ...]
+
+Writes a curve per loss term (plus the combined 'loss', plus all_losses.png)
+into --loss-plot-dir, and labels the five columns of every render grid.
 
 Needs the animer2 micromamba env active (or run via
 `micromamba run -n animer2 python scripts/test_camera_scale_overfit.py ...`).
@@ -30,6 +34,9 @@ root = pyrootutils.setup_root(
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
+
+from scripts.utils import (GRID_COLUMN_LABELS, LossHistory, plot_loss_history,
+                           resume_loss_history, save_labeled_grid)
 
 
 def parse_args():
@@ -91,6 +98,14 @@ def parse_args():
     p.add_argument("--params-out-dir", default="camera_scale_overfit_params",
                   help="Per-holdout-sample pred/GT VAREN params (VAREN/examples/"
                        "example_params.json schema) + wireframe overlay PNGs")
+    p.add_argument("--loss-plot-dir", default="camera_scale_overfit_losses",
+                  help="Loss curves: one PNG per loss term (including the combined "
+                       "'loss'), plus all_losses.png and the raw loss_history.json. "
+                       "Refreshed at every checkpoint so a run can be watched live.")
+    p.add_argument("--loss-smooth-window", type=int, default=25,
+                  help="Rolling-mean window drawn over the raw loss curves "
+                       "(minibatch SGD is noisy enough that the trend is otherwise "
+                       "hard to read). Pass 1 to plot the raw curve only.")
     return p.parse_args()
 
 
@@ -281,8 +296,8 @@ def save_checkpoint(model, optimizer, step, checkpoint_dir, batch, cfg, render, 
     snapshot of the current predictions on the training batch, both named by step."""
     os.makedirs(checkpoint_dir, exist_ok=True)
     ckpt_path = os.path.join(checkpoint_dir, f"step_{step:06d}.pt")
-    # torch.save({'step': step, 'model': model.state_dict(), 'optimizer': optimizer.state_dict(),
-    #            'scheduler': scheduler.state_dict() if scheduler is not None else None}, ckpt_path)
+    torch.save({'step': step, 'model': model.state_dict(), 'optimizer': optimizer.state_dict(),
+               'scheduler': scheduler.state_dict() if scheduler is not None else None}, ckpt_path)
 
     if not render:
         print(f"  [checkpoint] saved {ckpt_path}")
@@ -297,13 +312,19 @@ def save_checkpoint(model, optimizer, step, checkpoint_dir, batch, cfg, render, 
     model.train()
     render_path = os.path.join(checkpoint_dir, f"step_{step:06d}_render.png")
     try:
-        from torchvision.utils import save_image
-        save_image(rend_imgs, render_path)
+        save_labeled_grid(rend_imgs, render_path)
         print(f"  [checkpoint] saved {ckpt_path} + {render_path}")
     except Exception:
         import traceback
         print(f"  [checkpoint] saved {ckpt_path}, but render failed (not fatal):", file=sys.stderr)
         traceback.print_exc()
+
+
+def cycle_loader(dataloader):
+    """Endless stream of batches, so the training loop can be driven by step
+    count rather than epochs."""
+    while True:
+        yield from dataloader
 
 
 def pick_holdout_samples(all_data, available, train_idxs, num_samples):
@@ -347,26 +368,12 @@ def main():
     )
     dataset.data['data'] = [all_data[i] for i in idxs]
     n_samples = len(idxs)
-    # Two failure modes to avoid here. A hardcoded batch_size=2 silently trained
-    # on only 2 of the --num-samples requested (the rest were loaded into
-    # dataset.data and never touched). Using n_samples fixes that but does not
-    # scale: this script's .sh wrapper defaults to --num-samples 3000, which
-    # would build a single 3000-image batch and exhaust any GPU. So: keep the
-    # single fixed full batch while the set actually fits (the original
-    # overfit-a-tiny-set diagnostic, and what makes step-to-step loss directly
-    # comparable), and fall back to shuffled minibatch SGD over the whole set
-    # once it doesn't.
+
     batch_size = max(1, min(args.batch_size, n_samples))
     full_batch = n_samples <= batch_size
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=not full_batch)
 
-    def _cycle(dl):
-        while True:
-            yield from dl
-
-    batch_iter = _cycle(loader)
-    # In full-batch mode this is *the* training batch; otherwise it is the
-    # reference batch used for periodic render snapshots.
+    batch_iter = cycle_loader(loader)
     batch = recursive_to(next(batch_iter), args.device)
     print(f"training on {n_samples} sample(s), batch_size={batch_size} "
           f"({'full-batch' if full_batch else 'minibatch SGD'})")
@@ -379,11 +386,6 @@ def main():
         print("*** --disable-fix: using the OLD unconstrained camera-scale formula ***")
         model.forward_one_parametric_model = types.MethodType(old_unconstrained_forward_one_parametric_model, model)
 
-    # Use the model's own configure_optimizers() -- NOT a bespoke plain-Adam
-    # loop -- so this matches real training's optimizer exactly: AdamW +
-    # TRAIN.WEIGHT_DECAY, TRAIN.BACKBONE_LR_GROUPS discriminative per-block LR
-    # (if set), and the warmup->cosine LR schedule. A flat single-LR Adam here
-    # silently diverged from what run.sh actually trains with.
     optimizers, schedulers = model.configure_optimizers()
     optimizer = optimizers[0]
     # DEBUG: print optimizer param groups
@@ -406,6 +408,12 @@ def main():
             print(f"start_step ({start_step}) >= --steps ({args.steps}), nothing left to train -- "
                  "skipping straight to final eval/render.")
 
+    loss_history_path = os.path.join(args.loss_plot_dir, "loss_history.json")
+    history = resume_loss_history(loss_history_path, start_step) if args.resume_from else LossHistory()
+    if not history.is_empty():
+        print(f"resumed loss history from {loss_history_path}: "
+              f"{len(history.recorded_steps())} step(s) before step {start_step}, "
+              f"{len(history.keys())} loss term(s)")
     for step in range(start_step, args.steps):
         step_batch = batch if full_batch else recursive_to(next(batch_iter), args.device)
         optimizer.zero_grad()
@@ -415,6 +423,7 @@ def main():
         optimizer.step()
         if scheduler is not None:
             scheduler.step()
+        history.record(step, output['losses'])
         if step % args.log_every == 0 or step == args.steps - 1:
             comps = {k: round(v.item(), 3) for k, v in output['losses'].items()}
             cam_z = output['varen_output']['pred_cam_t'][:, 2].detach().cpu().numpy()
@@ -423,15 +432,20 @@ def main():
                  f"cam_z_min={cam_z.min():.1f} cam_z_max={cam_z.max():.1f} cam_z_neg_count={neg}")
         if checkpoint_every > 0 and (step % checkpoint_every == 0 or step == args.steps - 1):
             save_checkpoint(model, optimizer, step, args.checkpoint_dir, batch, cfg, args.render, scheduler=scheduler)
+            plot_loss_history(history, args.loss_plot_dir, smooth_window=args.loss_smooth_window)
+            history.save_json(loss_history_path)
 
-    # Train-set final pixel error -- same metric as the holdout check below,
-    # but on the samples actually optimized against. Distinguishes "not
-    # fitting even memorizable examples" (a real bug) from "fits training
-    # samples fine but doesn't generalize" (capacity/data-scale limit).
+    if history.is_empty():
+        print("\nNo loss history to plot.")
+    else:
+        plots = plot_loss_history(history, args.loss_plot_dir, smooth_window=args.loss_smooth_window)
+        history.save_json(loss_history_path)
+        recorded = history.recorded_steps()
+        print(f"\nSaved {len(plots)} loss plots ({len(history.keys())} loss terms incl. the "
+             f"combined 'loss', plus all_losses.png) + loss_history.json to {args.loss_plot_dir}/ "
+             f"(steps {recorded[0]}..{recorded[-1]})")
+
     model.eval()
-    # Evaluated in batch_size chunks over every training sample -- forwarding all
-    # n_samples at once would OOM for the same reason a single giant training
-    # batch does.
     train_errs = []
     with torch.no_grad():
         for tb in DataLoader(dataset, batch_size=batch_size, shuffle=False):
@@ -515,20 +529,15 @@ def main():
             model.compute_loss(holdout_batch, output, train=False)
             rend_imgs = model.tensorboard_logging(holdout_batch, output, step_count=args.steps,
                                                   train=False, write_to_summary_writer=False)
-            from torchvision.utils import save_image
-            save_image(rend_imgs, args.render_out)
-            print(f"\nSaved HOLDOUT render (per sample: image | mesh front | mesh side | pred keypoints "
-                 f"| GT keypoints) to {args.render_out}")
+            save_labeled_grid(rend_imgs, args.render_out)
+            print(f"\nSaved HOLDOUT render (columns: {' | '.join(GRID_COLUMN_LABELS)}) "
+                 f"to {args.render_out}")
         except Exception:
             import traceback
             print("\n[render skipped] rendering raised an exception -- not a hard failure, "
                  "the numeric results above are unaffected. Traceback:", file=sys.stderr)
             traceback.print_exc()
 
-    # Per-sample outputs for independent inspection outside this script: pred +
-    # GT params in the same flat schema as VAREN/examples/example_params.json
-    # (load directly in trimesh/blender), plus a semi-transparent wireframe
-    # overlay per sample (edges read alignment more precisely than solid shading).
     try:
         images_np = denormalize_images(holdout_batch['img']).permute(0, 2, 3, 1).detach().cpu().numpy()
         focal_length = float(cfg.VAREN.get("FOCAL_LENGTH", 1000))

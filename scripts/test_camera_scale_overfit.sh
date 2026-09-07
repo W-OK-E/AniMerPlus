@@ -10,6 +10,9 @@
 #                                data/AniMerPlus/checkpoint.ckpt). Pass "" for
 #                                a fast random-init smoke check instead.
 #   -n, --num-samples N         (default: 10)
+#   -b, --batch-size N           Samples per optimizer step (default: 8). Full-batch
+#                                descent while --num-samples fits in one batch,
+#                                shuffled minibatch SGD above that.
 #   --num-holdout-samples N      Samples NOT used for training, for the final
 #                                results/render (default: 10)
 #   -s, --steps N                (default: 800)
@@ -34,6 +37,11 @@
 #   --frozen-stages N             MODEL.BACKBONE.FROZEN_STAGES (default: -1, nothing frozen) --
 #                                only takes effect when --freeze-attn/--freeze-ffn
 #                                are both false
+#   --loss-plot-dir PATH          One curve per loss term + all_losses.png +
+#                                loss_history.json, refreshed every checkpoint
+#                                (default: camera_scale_overfit_losses)
+#   --loss-smooth-window N        Rolling-mean window over the loss curves
+#                                (default: 25; 1 = raw curve only)
 #   -h, --help                   Show this help and exit
 #
 # EXAMPLES:
@@ -49,6 +57,7 @@ ROOT_IMAGE="/lustre/home/okumar/outputs/batches"
 VAREN_MODEL_PATH="/lustre/home/okumar/VAREN/models"
 PRETRAINED_WEIGHTS="data/AniMerPlus/checkpoint.ckpt"
 NUM_SAMPLES=3000
+BATCH_SIZE=""
 NUM_HOLDOUT_SAMPLES=10
 STEPS=2000
 SEED=""
@@ -63,6 +72,8 @@ RESUME_FROM=""
 FREEZE_ATTN=""
 FREEZE_FFN=""
 FROZEN_STAGES=""
+LOSS_PLOT_DIR=""
+LOSS_SMOOTH_WINDOW=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -71,6 +82,7 @@ while [[ $# -gt 0 ]]; do
     -m|--varen-model-path) VAREN_MODEL_PATH="$2"; shift 2 ;;
     -w|--pretrained-weights) PRETRAINED_WEIGHTS="$2"; shift 2 ;;
     -n|--num-samples) NUM_SAMPLES="$2"; shift 2 ;;
+    -b|--batch-size) BATCH_SIZE="$2"; shift 2 ;;
     --num-holdout-samples) NUM_HOLDOUT_SAMPLES="$2"; shift 2 ;;
     -s|--steps) STEPS="$2"; shift 2 ;;
     --seed) SEED="$2"; shift 2 ;;
@@ -85,6 +97,8 @@ while [[ $# -gt 0 ]]; do
     --freeze-attn) FREEZE_ATTN="$2"; shift 2 ;;
     --freeze-ffn) FREEZE_FFN="$2"; shift 2 ;;
     --frozen-stages) FROZEN_STAGES="$2"; shift 2 ;;
+    --loss-plot-dir) LOSS_PLOT_DIR="$2"; shift 2 ;;
+    --loss-smooth-window) LOSS_SMOOTH_WINDOW="$2"; shift 2 ;;
     -h|--help) grep '^#' "$0" | sed 's/^#//; s/^ //'; exit 0 ;;
     *) echo "Unknown option: $1" >&2; exit 1 ;;
   esac
@@ -105,5 +119,8 @@ ARGS=(--json-file "$JSON_FILE" --root-image "$ROOT_IMAGE" --varen-model-path "$V
 [[ -n "$FREEZE_ATTN" ]] && ARGS+=(--freeze-attn "$FREEZE_ATTN")
 [[ -n "$FREEZE_FFN" ]] && ARGS+=(--freeze-ffn "$FREEZE_FFN")
 [[ -n "$FROZEN_STAGES" ]] && ARGS+=(--frozen-stages "$FROZEN_STAGES")
+[[ -n "$BATCH_SIZE" ]] && ARGS+=(--batch-size "$BATCH_SIZE")
+[[ -n "$LOSS_PLOT_DIR" ]] && ARGS+=(--loss-plot-dir "$LOSS_PLOT_DIR")
+[[ -n "$LOSS_SMOOTH_WINDOW" ]] && ARGS+=(--loss-smooth-window "$LOSS_SMOOTH_WINDOW")
 
 python3 scripts/test_camera_scale_overfit.py "${ARGS[@]}"
