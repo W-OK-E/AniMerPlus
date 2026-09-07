@@ -23,7 +23,6 @@ LOSS_WEIGHTS:
     BETAS: 0.02
     SCALE: 0.05
     TRANSL: 0.05
-  SUPCON: 0.0005
 
 TRAIN:
   LR: 1e-4  
@@ -44,7 +43,6 @@ MODEL:
   IMAGE_MEAN: [0.485, 0.456, 0.406]
   IMAGE_STD: [0.229, 0.224, 0.225]
   BACKBONE:
-    USE_CLS: true
     TYPE: vithmoe
     PRETRAINED_WEIGHTS: data/vitmoe.pth
     FROZEN_STAGES: -1     # -1 = nothing frozen; N = freeze patch_embed + blocks[1..N] (block 0 stays trainable)

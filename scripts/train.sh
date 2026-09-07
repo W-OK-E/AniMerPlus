@@ -26,8 +26,7 @@
 #       DATASETS.HORSE.WEIGHT=1 \
 #       DATASETS.HORSE.ROOT_IMAGE=/path/to/horse/images \
 #       DATASETS.HORSE.JSON_FILE.TRAIN=/path/to/horse/train.json \
-#       DATASETS.HORSE.JSON_FILE.TEST=/path/to/horse/test.json \
-#       DATASETS.ANIMAL3D.WEIGHT=0 DATASETS.CUB.WEIGHT=0 DATASETS.CTRLAVES3D.WEIGHT=0
+#       DATASETS.HORSE.JSON_FILE.TEST=/path/to/horse/test.json
 #
 # EXAMPLES:
 #   # Quick local training run with defaults:

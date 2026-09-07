@@ -120,7 +120,6 @@ def build_cfg(json_file, root_image, varen_model_path, pretrained_weights,
         f"MODEL.BACKBONE.FREEZE_ATTN={str(freeze_attn).lower()}",
         f"MODEL.BACKBONE.FREEZE_FFN={str(freeze_ffn).lower()}",
         f"MODEL.BACKBONE.FROZEN_STAGES={frozen_stages}",
-        "MODEL.BACKBONE.USE_CLS=false",
     ]
     if pretrained_weights:
         overrides.append(f"MODEL.BACKBONE.PRETRAINED_WEIGHTS={pretrained_weights}")

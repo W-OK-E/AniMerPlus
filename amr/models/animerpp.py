@@ -9,7 +9,7 @@ from ..utils.geometry import aa_to_rotmat, perspective_projection
 from ..utils.pylogger import get_pylogger
 from .backbones import create_backbone
 from .heads import build_varen_head
-from .losses import Keypoint2DLoss, Keypoint3DLoss, ParameterLoss, SupConLoss
+from .losses import Keypoint2DLoss, Keypoint3DLoss, ParameterLoss
 from .varen_wrapper import VAREN
 
 log = get_pylogger(__name__)
@@ -61,7 +61,6 @@ class AniMerPlusPlus(pl.LightningModule):
         # Define loss functions
         self.keypoint_3d_loss = Keypoint3DLoss(loss_type='l1')
         self.keypoint_2d_loss = Keypoint2DLoss(loss_type='l1')
-        self.supcon_loss = SupConLoss()
         self.parameter_loss = ParameterLoss()
 
         # Instantiate VAREN model
@@ -105,11 +104,9 @@ class AniMerPlusPlus(pl.LightningModule):
             import re
             block_re = re.compile(r'blocks\.(\d+)\.')
             by_mult: dict[float, list] = {}
-            trainable_param = []
             for name, p in self.backbone.named_parameters():
                 if not p.requires_grad:
                     continue
-                trainable_param.append(name)
                 m = block_re.match(name)
                 block_idx = int(m.group(1)) if m else 0
                 lr_mult = 1.0
@@ -125,9 +122,6 @@ class AniMerPlusPlus(pl.LightningModule):
         else:
             param_groups = [{'params': filter(lambda p: p.requires_grad, self.get_parameters()), 'lr': base_lr}]
 
-        if(len(trainable_param) > 1):
-            for p in trainable_param:
-                print(p)
         if "vit" in self.cfg.MODEL.BACKBONE.TYPE:
             optimizer = torch.optim.AdamW(params=param_groups,
                                           weight_decay=self.cfg.TRAIN.WEIGHT_DECAY)
