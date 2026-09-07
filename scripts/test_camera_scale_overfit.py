@@ -52,6 +52,12 @@ def parse_args():
                        "--freeze-attn/--freeze-ffn are both false, since those override every "
                        "block unconditionally when true.")
     p.add_argument("--num-samples", type=int, default=10)
+    p.add_argument("--batch-size", type=int, default=8,
+                   help="Samples per optimizer step. If --num-samples fits in one "
+                        "batch the script does full-batch descent on a single fixed "
+                        "batch (the original overfit-a-tiny-set diagnostic); above "
+                        "that it switches to shuffled minibatch SGD over all of them. "
+                        "Raising this past what the GPU holds is what OOMs.")
     p.add_argument("--num-holdout-samples", type=int, default=10,
                   help="Samples NOT used for training, for the final results/render "
                        "(checks generalization, not just memorization)")
@@ -341,11 +347,29 @@ def main():
     )
     dataset.data['data'] = [all_data[i] for i in idxs]
     n_samples = len(idxs)
-    # batch_size must be n_samples, not a fixed 2 -- otherwise next(iter(loader))
-    # silently trains on only the first 2 of the --num-samples requested (all
-    # other selected samples are loaded into dataset.data but never used).
-    loader = DataLoader(dataset, batch_size=n_samples, shuffle=False)
-    batch = recursive_to(next(iter(loader)), args.device)
+    # Two failure modes to avoid here. A hardcoded batch_size=2 silently trained
+    # on only 2 of the --num-samples requested (the rest were loaded into
+    # dataset.data and never touched). Using n_samples fixes that but does not
+    # scale: this script's .sh wrapper defaults to --num-samples 3000, which
+    # would build a single 3000-image batch and exhaust any GPU. So: keep the
+    # single fixed full batch while the set actually fits (the original
+    # overfit-a-tiny-set diagnostic, and what makes step-to-step loss directly
+    # comparable), and fall back to shuffled minibatch SGD over the whole set
+    # once it doesn't.
+    batch_size = max(1, min(args.batch_size, n_samples))
+    full_batch = n_samples <= batch_size
+    loader = DataLoader(dataset, batch_size=batch_size, shuffle=not full_batch)
+
+    def _cycle(dl):
+        while True:
+            yield from dl
+
+    batch_iter = _cycle(loader)
+    # In full-batch mode this is *the* training batch; otherwise it is the
+    # reference batch used for periodic render snapshots.
+    batch = recursive_to(next(batch_iter), args.device)
+    print(f"training on {n_samples} sample(s), batch_size={batch_size} "
+          f"({'full-batch' if full_batch else 'minibatch SGD'})")
 
     model = AniMerPlusPlus(cfg, init_renderer=args.render)
     model.to(args.device)
@@ -383,9 +407,10 @@ def main():
                  "skipping straight to final eval/render.")
 
     for step in range(start_step, args.steps):
+        step_batch = batch if full_batch else recursive_to(next(batch_iter), args.device)
         optimizer.zero_grad()
-        output = model.forward_step(batch, train=True)
-        loss = model.compute_loss(batch, output, train=True)
+        output = model.forward_step(step_batch, train=True)
+        loss = model.compute_loss(step_batch, output, train=True)
         loss.backward()
         optimizer.step()
         if scheduler is not None:
@@ -404,14 +429,24 @@ def main():
     # fitting even memorizable examples" (a real bug) from "fits training
     # samples fine but doesn't generalize" (capacity/data-scale limit).
     model.eval()
+    # Evaluated in batch_size chunks over every training sample -- forwarding all
+    # n_samples at once would OOM for the same reason a single giant training
+    # batch does.
+    train_errs = []
     with torch.no_grad():
-        train_output = model.forward_step(batch, train=False)
-    train_pred_2d = train_output['varen_output']['pred_keypoints_2d']
-    train_gt_2d = batch['keypoints_2d'][..., :2]
-    train_per_sample_px = ((train_pred_2d - train_gt_2d).norm(dim=-1).mean(dim=-1) * cfg.MODEL.IMAGE_SIZE).detach().cpu().numpy()
+        for tb in DataLoader(dataset, batch_size=batch_size, shuffle=False):
+            tb = recursive_to(tb, args.device)
+            tout = model.forward_step(tb, train=False)
+            err = ((tout['varen_output']['pred_keypoints_2d'] - tb['keypoints_2d'][..., :2])
+                   .norm(dim=-1).mean(dim=-1) * cfg.MODEL.IMAGE_SIZE)
+            train_errs.append(err.detach().cpu().numpy())
+    train_per_sample_px = np.concatenate(train_errs)
     print("\n=== per-sample TRAIN (memorization) results ===")
-    for i in range(len(train_per_sample_px)):
+    max_listed = 20
+    for i in range(min(len(train_per_sample_px), max_listed)):
         print(f"train sample {i}: final_2d_err={train_per_sample_px[i]:7.1f}px")
+    if len(train_per_sample_px) > max_listed:
+        print(f"... {len(train_per_sample_px) - max_listed} more not listed")
     n_train_pass = int((train_per_sample_px < args.pass_threshold_px).sum())
     print(f"{n_train_pass}/{len(train_per_sample_px)} TRAIN samples under {args.pass_threshold_px}px threshold "
          f"(mean {train_per_sample_px.mean():.1f}px)")
@@ -436,9 +471,15 @@ def main():
         num_betas=cfg.VAREN.get("NUM_BETAS", 39),
     )
     holdout_dataset.data['data'] = [all_data[i] for i in holdout_idxs]
-    n_holdout = len(holdout_idxs)
-    holdout_loader = DataLoader(holdout_dataset, batch_size=32, shuffle=False)
+    # Only the first batch is evaluated/rendered, so n_holdout must come from
+    # what was actually forwarded -- not len(holdout_idxs), which indexes past
+    # the results array whenever --num-holdout-samples exceeds this batch size.
+    holdout_bs = min(32, len(holdout_idxs))
+    holdout_loader = DataLoader(holdout_dataset, batch_size=holdout_bs, shuffle=False)
     holdout_batch = recursive_to(next(iter(holdout_loader)), args.device)
+    n_holdout = holdout_bs
+    if len(holdout_idxs) > holdout_bs:
+        print(f"note: {len(holdout_idxs)} holdout samples selected, evaluating the first {holdout_bs}")
 
     model.eval()
     with torch.no_grad():
