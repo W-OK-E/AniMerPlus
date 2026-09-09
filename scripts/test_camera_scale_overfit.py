@@ -289,14 +289,111 @@ def save_sample_outputs(output, batch, sample_idx, out_dir, prefix, is_axis_angl
         Image.fromarray((wireframe.clip(0, 1) * 255).astype(np.uint8)).save(
             os.path.join(out_dir, f"{prefix}_wireframe.png"))
 
+def load_optimizer_partial(
+    optimizer,
+    model,
+    checkpoint,
+):
+    old_opt_state = checkpoint["optimizer"]
+    old_param_names = checkpoint["optimizer_param_names"]
+
+    old_id_to_name = {}
+
+    for group, names in zip(
+        old_opt_state["param_groups"],
+        old_param_names,
+    ):
+        for param_id, name in zip(group["params"], names):
+            old_id_to_name[param_id] = name
+
+    # --------------------------------------------------
+    # Map parameter name -> saved optimizer state
+    # --------------------------------------------------
+    old_state_by_name = {}
+
+    for param_id, state in old_opt_state["state"].items():
+        name = old_id_to_name.get(param_id)
+
+        if name is not None:
+            old_state_by_name[name] = state
+
+    current_name_by_id = {
+        id(param): name
+        for name, param in model.named_parameters()
+    }
+
+    loaded = 0
+    skipped = 0
+
+    for group in optimizer.param_groups:
+        for param in group["params"]:
+            name = current_name_by_id[id(param)]
+
+            if name not in old_state_by_name:
+                skipped += 1
+                continue
+
+            old_state = old_state_by_name[name]
+
+            # Verify tensor states are compatible
+            compatible = True
+
+            for key, value in old_state.items():
+                if torch.is_tensor(value):
+                    # Scalars such as Adam's `step` don't match param shape
+                    if value.ndim > 0 and value.shape != param.shape:
+                        compatible = False
+                        break
+
+            if not compatible:
+                print(f"Skipping incompatible optimizer state: {name}")
+                skipped += 1
+                continue
+
+            optimizer.state[param] = {
+                key: (
+                    value.to(param.device)
+                    if torch.is_tensor(value)
+                    else value
+                )
+                for key, value in old_state.items()
+            }
+
+            loaded += 1
+
+    print(
+        f"Optimizer state loaded: {loaded} parameters, "
+        f"initialized fresh: {skipped} parameters"
+    )
+    return optimizer
+
 
 def save_checkpoint(model, optimizer, step, checkpoint_dir, batch, cfg, render, scheduler=None):
     """Saves model+optimizer(+scheduler) state, and (if render) a render
     snapshot of the current predictions on the training batch, both named by step."""
     os.makedirs(checkpoint_dir, exist_ok=True)
     ckpt_path = os.path.join(checkpoint_dir, f"step_{step:06d}.pt")
-    torch.save({'step': step, 'model': model.state_dict(), 'optimizer': optimizer.state_dict(),
-               'scheduler': scheduler.state_dict() if scheduler is not None else None}, ckpt_path)
+
+    ##Add additional info to make loading checkpoints easier to load back up when resuming training
+    param_to_name = {
+    id(param): name
+    for name, param in model.named_parameters()
+    }
+
+    optimizer_param_names = [
+        [param_to_name[id(param)] for param in group["params"]]
+        for group in optimizer.param_groups
+    ]
+
+    checkpoint = {
+        "model": model.state_dict(),
+        "step":step,
+        "optimizer": optimizer.state_dict(),
+        "optimizer_param_names": optimizer_param_names,
+        "scheduler":scheduler.state_dict() if scheduler is not None else None
+    }
+
+    torch.save(checkpoint, ckpt_path)
 
     if not render:
         print(f"  [checkpoint] saved {ckpt_path}")
@@ -398,7 +495,10 @@ def main():
     if args.resume_from:
         ckpt = torch.load(args.resume_from, map_location=args.device)
         model.load_state_dict(ckpt['model'])
-        optimizer.load_state_dict(ckpt['optimizer'])
+        try:
+            optimizer = load_optimizer_partial(optimizer,model,ckpt)
+        except:
+            print("Not loading optimizer state, init from scratch")
         if scheduler is not None and ckpt.get('scheduler') is not None:
             scheduler.load_state_dict(ckpt['scheduler'])
         start_step = ckpt['step'] + 1
