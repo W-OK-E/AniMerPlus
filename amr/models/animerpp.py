@@ -209,8 +209,10 @@ class AniMerPlusPlus(pl.LightningModule):
         surface_keypoints = getattr(parametric_model_output, 'surface_keypoints', None)
         pred_keypoints_3d = surface_keypoints if surface_keypoints is not None else parametric_model_output.joints
         pred_vertices = parametric_model_output.vertices
+        pred_joints = parametric_model_output.joints
         output['pred_keypoints_3d'] = pred_keypoints_3d.reshape(batch_size, -1, 3)
         output['pred_vertices'] = pred_vertices.reshape(batch_size, -1, 3)
+        output['pred_joints'] = pred_joints.reshape(batch_size, -1, 3)
         pred_cam_t = pred_cam_t.reshape(-1, 3)
         focal_length = focal_length.reshape(-1, 2)
         # Perspective Projection
@@ -267,10 +269,6 @@ class AniMerPlusPlus(pl.LightningModule):
         loss_keypoints_2d = self.keypoint_2d_loss(pred_keypoints_2d, gt_keypoints_2d)
         loss_keypoints_3d = self.keypoint_3d_loss(pred_keypoints_3d, gt_keypoints_3d, pelvis_id=0)
 
-        # Explicit scale supervision: generated horses were coming out consistently
-        # smaller than ground truth. Keypoint3DLoss's per-point L1 mixes pose and
-        # size error together, so overall size gets a weak signal -- this isolates
-        # it directly as mean pelvis-relative keypoint distance (pred vs GT).
         gt_conf = gt_keypoints_3d[:, :, -1]
         pred_rel = pred_keypoints_3d - pred_keypoints_3d[:, 0:1, :]
         gt_rel = gt_keypoints_3d[:, :, :-1] - gt_keypoints_3d[:, 0:1, :-1]
@@ -290,6 +288,7 @@ class AniMerPlusPlus(pl.LightningModule):
                                  transl=None,
                                  pose2rot=bool(is_axis_angle['body_pose'].all()))
             gt_joints = _varen_native_to_camera_frame(gt_mesh.joints)
+<<<<<<< HEAD
             gt_joints_2d = perspective_projection(
                   gt_joints,
                   translation=gt_params['transl'],
@@ -303,6 +302,11 @@ class AniMerPlusPlus(pl.LightningModule):
 
         loss_joints_3d = self.keypoint_3d_loss(output['pred_joints'], gt_joints, pelvis_id=0)
         loss_joints_2d = self.keypoint_2d_loss(output['pred_joints_2d'],gt_joints_2d)
+=======
+            gt_joints = torch.cat([gt_joints, gt_joints_conf.expand(-1, gt_joints.shape[1], -1)], dim=-1)
+        loss_joints_3d = self.keypoint_3d_loss(output['pred_joints'], gt_joints, pelvis_id=0)
+
+>>>>>>> f072c94 (3D Joints are being supervised now)
         pred_params_and_cam = dict(pred_params)
         loss_varen_params = {}
         for k, pred in pred_params_and_cam.items():
