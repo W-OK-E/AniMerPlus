@@ -205,7 +205,7 @@ class AniMerPlusPlus(pl.LightningModule):
             pred_params['pose'] = pred_params['pose'].reshape(batch_size, -1, 3, 3)
             pred_params['bone'] = pred_params['bone'].reshape(batch_size, -1) if 'bone' in pred_params else None
             parametric_model_output = parametric_model(**pred_params, pose2rot=False)
-
+        
         surface_keypoints = getattr(parametric_model_output, 'surface_keypoints', None)
         pred_keypoints_3d = surface_keypoints if surface_keypoints is not None else parametric_model_output.joints
         pred_vertices = parametric_model_output.vertices
@@ -217,6 +217,10 @@ class AniMerPlusPlus(pl.LightningModule):
         pred_keypoints_2d = perspective_projection(pred_keypoints_3d, 
                                                  translation = pred_cam_t,
                                                     focal_length = focal_length / self.cfg.MODEL.IMAGE_SIZE)
+        pred_joints_2d = perspective_projection(pred_joints,
+                                                translation = pred_cam_t,
+                                                focal_length = focal_length / self.cfg.MODEL.IMAGE_SIZE)
+        output["pred_joints_2d"] = pred_joints_2d.reshape(batch_size,-1,2)
         # Weak Perspective Projection
         # pred_keypoints_2d = cam_scale.view(-1, 1, 1) * pred_keypoints_3d[..., :2] + pred_cam[:, 1:3].unsqueeze(1)
         output['pred_keypoints_2d'] = pred_keypoints_2d.reshape(batch_size, -1, 2)
@@ -277,12 +281,23 @@ class AniMerPlusPlus(pl.LightningModule):
         gt_params = batch['varen_params']
         has_params = batch['has_varen_params']
         is_axis_angle = batch['varen_params_is_axis_angle']
-        # Explicit camera supervision: batch['varen_params']['transl'] is the exact
-        # GT camera translation from the synthetic renderer (see varen_dataset.py /
-        # export_dataset.py) -- it was already loaded into every batch but never
-        # compared against pred_cam_t. Folded into the same per-param loop as
-        # global_orient/body_pose/betas below (transl is a plain (B,3) tensor, so
-        # the rotmat-conversion branch is a no-op for it, same as betas).
+
+        gt_joints_conf = (has_params['body_pose'] * has_params['betas']).reshape(batch_size, 1, 1)
+        with torch.no_grad():
+            gt_mesh = self.varen(global_orient=gt_params['global_orient'],
+                                 body_pose=gt_params['body_pose'],
+                                 betas=gt_params['betas'],
+                                 transl=None,
+                                 pose2rot=bool(is_axis_angle['body_pose'].all()))
+            gt_joints = _varen_native_to_camera_frame(gt_mesh.joints)
+            gt_joints_2d = perspective_projection(
+                  gt_joints,
+                  translation=gt_params['transl'],
+                  focal_length=batch['focal_length'] / self.cfg.MODEL.IMAGE_SIZE)
+            gt_joints = torch.cat([gt_joints, gt_joints_conf.expand(-1, gt_joints.shape[1], -1)], dim=-1)
+
+        loss_joints_3d = self.keypoint_3d_loss(output['pred_joints'], gt_joints, pelvis_id=0)
+        loss_joints_2d = self.keypoint_2d_loss(output['pred_joints_2d'],gt_joints_2d)
         pred_params_and_cam = dict(pred_params)
         pred_params_and_cam['transl'] = output['pred_cam_t']
         loss_varen_params = {}
@@ -299,6 +314,8 @@ class AniMerPlusPlus(pl.LightningModule):
         loss_config = self.cfg.LOSS_WEIGHTS.VAREN
         loss = loss_config['KEYPOINTS_3D'] * loss_keypoints_3d + \
                loss_config['KEYPOINTS_2D'] * loss_keypoints_2d + \
+               loss_config['JOINTS_3D'] * loss_joints_3d + \
+               loss_config["JOINTS_2D"] * loss_joints_2d + \
                loss_config['SCALE'] * loss_scale + \
                sum([loss_varen_params[k] * loss_config[k.upper()] for k in loss_varen_params])
 
