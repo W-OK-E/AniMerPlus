@@ -24,7 +24,7 @@ LOSS_WEIGHTS:
     BODY_POSE: 0.02
     BETAS: 0.02
     SCALE: 0.05
-    TRANSL: 0.05
+    TRANSL: 1.0
 
 TRAIN:
   LR: 1e-4  
@@ -34,6 +34,7 @@ TRAIN:
     - {max_block: 10, lr_mult: 0.01}
     - {max_block: 25, lr_mult: 0.1}
   BATCH_SIZE: 4
+  GRAD_CLIP_VAL: 1.0
   LOSS_REDUCTION: mean
   NUM_TRAIN_SAMPLES: 64
   NUM_TEST_SAMPLES: 2

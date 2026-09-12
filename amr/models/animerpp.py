@@ -294,12 +294,16 @@ class AniMerPlusPlus(pl.LightningModule):
                   gt_joints,
                   translation=gt_params['transl'],
                   focal_length=batch['focal_length'] / self.cfg.MODEL.IMAGE_SIZE)
+            # Keypoint2DLoss reads gt[..., -1] as the confidence weight, so the GT
+            # must carry a 3rd channel. Without it the y coordinate is used as the
+            # weight (negative for the top half of the image) and only x is
+            # supervised -- which makes the loss unbounded below.
+            gt_joints_2d = torch.cat([gt_joints_2d, gt_joints_conf.expand(-1, gt_joints_2d.shape[1], -1)], dim=-1)
             gt_joints = torch.cat([gt_joints, gt_joints_conf.expand(-1, gt_joints.shape[1], -1)], dim=-1)
 
         loss_joints_3d = self.keypoint_3d_loss(output['pred_joints'], gt_joints, pelvis_id=0)
         loss_joints_2d = self.keypoint_2d_loss(output['pred_joints_2d'],gt_joints_2d)
         pred_params_and_cam = dict(pred_params)
-        pred_params_and_cam['transl'] = output['pred_cam_t']
         loss_varen_params = {}
         for k, pred in pred_params_and_cam.items():
             if k not in gt_params:
@@ -310,6 +314,23 @@ class AniMerPlusPlus(pl.LightningModule):
             loss_varen_params[k] = self.parameter_loss(pred.reshape(batch_size, -1),
                                                        gt.reshape(batch_size, -1),
                                                        has_params[k])
+
+        # Translation is supervised separately rather than through parameter_loss.
+        # pred_cam_t[:, 2] is a *reciprocal* reparameterisation of what the head
+        # actually predicts (tz = 2f / (IMAGE_SIZE * cam_scale)), so d(tz)/d(cam_scale)
+        # diverges as cam_scale approaches zero. On top of that tz ~ 50 while tx, ty ~ 1,
+        # so a plain MSE over all three is ~8000x dominated by depth. Supervising depth
+        # in log space fixes both: it is a relative depth error, bounded near the floor,
+        # and is exactly a loss on the cam_scale the head regresses, since
+        # log cam_scale = log(2f / IMAGE_SIZE) - log tz.
+        pred_cam_t = output['pred_cam_t']
+        gt_transl = gt_params['transl'].reshape(batch_size, 3)
+        depth_eps = 1e-3
+        transl_xy_sq = (pred_cam_t[:, :2] - gt_transl[:, :2]) ** 2
+        log_depth_sq = (pred_cam_t[:, 2].clamp(min=depth_eps).log()
+                        - gt_transl[:, 2].clamp(min=depth_eps).log()) ** 2
+        has_transl = has_params['transl'].type(pred_cam_t.dtype).reshape(batch_size)
+        loss_varen_params['transl'] = (has_transl * (transl_xy_sq.sum(dim=-1) + log_depth_sq)).sum()
 
         loss_config = self.cfg.LOSS_WEIGHTS.VAREN
         loss = loss_config['KEYPOINTS_3D'] * loss_keypoints_3d + \
@@ -322,6 +343,8 @@ class AniMerPlusPlus(pl.LightningModule):
         losses = dict(loss_varen=loss.detach(),
                       loss_varen_keypoints_2d=loss_keypoints_2d.detach(),
                       loss_varen_keypoints_3d=loss_keypoints_3d.detach(),
+                      loss_varen_joints_3d=loss_joints_3d.detach(),
+                      loss_varen_joints_2d=loss_joints_2d.detach(),
                       loss_varen_scale=loss_scale.detach())
         for k, v in loss_varen_params.items():
             losses['loss_varen_' + k] = v.detach()
