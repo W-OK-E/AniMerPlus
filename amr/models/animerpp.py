@@ -16,6 +16,9 @@ log = get_pylogger(__name__)
 #Camera scale bounds for when using weak perspective projection.
 CAM_SCALE_MIN = 0.02
 CAM_SCALE_MAX = 3.0
+# Vertex loss subsamples the mesh: 13873 verts -> 1388, enough to cover every
+# region densely while staying negligible next to the VAREN forward itself.
+VERTEX_STRIDE = 10
 
 
 def _varen_native_to_camera_frame(x: torch.Tensor) -> torch.Tensor:
@@ -67,7 +70,7 @@ class AniMerPlusPlus(pl.LightningModule):
         varen_model_path = cfg.VAREN.MODEL_PATH
         self.varen = VAREN(model_path=varen_model_path,
                            num_betas=cfg.VAREN.get('NUM_BETAS', 39),
-                           use_muscle_deformations=cfg.VAREN.get('USE_MUSCLE_DEFORMATIONS', False),
+                           use_muscle_deformations=cfg.VAREN.get('USE_MUSCLE_DEFORMATIONS', True),
                            ext=cfg.VAREN.get('EXT', 'pkl'))
 
         # Buffer that shows whether we need to initialize ActNorm layers
@@ -288,6 +291,8 @@ class AniMerPlusPlus(pl.LightningModule):
                                  transl=None,
                                  pose2rot=bool(is_axis_angle['body_pose'].all()))
             gt_joints = _varen_native_to_camera_frame(gt_mesh.joints)
+            gt_vertices_rel = (_varen_native_to_camera_frame(gt_mesh.vertices)[:, ::VERTEX_STRIDE]
+                               - gt_joints[:, 0:1, :])
             gt_joints_2d = perspective_projection(
                   gt_joints,
                   translation=gt_params['transl'],
@@ -297,6 +302,11 @@ class AniMerPlusPlus(pl.LightningModule):
 
         loss_joints_3d = self.keypoint_3d_loss(output['pred_joints'], gt_joints, pelvis_id=0)
         loss_joints_2d = self.keypoint_2d_loss(output['pred_joints_2d'],gt_joints_2d)
+
+        #Neck is not covered by surface keypoints and ends up getting crumpled with 3D Joint Supervision
+        pred_vertices_rel = (output['pred_vertices'][:, ::VERTEX_STRIDE]
+                             - output['pred_joints'][:, 0:1, :])
+        loss_vertices = (gt_joints_conf * (pred_vertices_rel - gt_vertices_rel).abs()).sum()
         pred_params_and_cam = dict(pred_params)
         loss_varen_params = {}
         for k, pred in pred_params_and_cam.items():
@@ -314,6 +324,7 @@ class AniMerPlusPlus(pl.LightningModule):
                loss_config['KEYPOINTS_2D'] * loss_keypoints_2d + \
                loss_config['JOINTS_3D'] * loss_joints_3d + \
                loss_config["JOINTS_2D"] * loss_joints_2d + \
+               loss_config['VERTICES'] * loss_vertices + \
                loss_config['SCALE'] * loss_scale + \
                sum([loss_varen_params[k] * loss_config[k.upper()] for k in loss_varen_params])
 
@@ -322,6 +333,7 @@ class AniMerPlusPlus(pl.LightningModule):
                       loss_varen_keypoints_3d=loss_keypoints_3d.detach(),
                       loss_varen_joints_3d=loss_joints_3d.detach(),
                       loss_varen_joints_2d=loss_joints_2d.detach(),
+                      loss_varen_vertices=loss_vertices.detach(),
                       loss_varen_scale=loss_scale.detach())
         for k, v in loss_varen_params.items():
             losses['loss_varen_' + k] = v.detach()
